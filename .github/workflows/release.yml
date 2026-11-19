@@ -54,7 +54,7 @@ jobs:
             echo "ROMSTORE_STORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::No ROMSTORE_KEYSTORE_BASE64 secret: the APK is signed with a throwaway debug key and will not update over other builds."
+            echo "::warning::No ROMSTORE_KEYSTORE_BASE64 secret: building with a throwaway debug key and NOT publishing (it could not update installed copies). Add the signing secrets, see README."
             echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -85,7 +85,17 @@ jobs:
           cp "$APK" dist/ROM-Store.apk
           (cd dist && sha256sum *.apk > SHA256SUMS.txt)
 
+      - name: Keep the unsigned build as an artifact
+        if: steps.key.outputs.signed != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ROM-Store-${{ env.TAG }}-unsigned
+          path: dist/*
+
+      # Only a build signed with the release key is published: anything else
+      # would not install over the copies people already have.
       - name: Publish the release
+        if: steps.key.outputs.signed == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
@@ -94,7 +104,6 @@ jobs:
           body: |
             Install: download **ROM-Store-${{ env.TAG }}.apk** on your device and open it (allow installing from your browser or file manager when Android asks).
             Always the newest: https://github.com/${{ github.repository }}/releases/latest/download/ROM-Store.apk
-            ${{ steps.key.outputs.signed == 'false' && '> This build is signed with a temporary key: uninstall an earlier ROM Store before installing it.' || '' }}
           files: |
             dist/ROM-Store-${{ env.TAG }}.apk
             dist/ROM-Store.apk
