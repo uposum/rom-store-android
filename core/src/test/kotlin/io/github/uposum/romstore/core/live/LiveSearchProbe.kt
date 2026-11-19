@@ -24,6 +24,20 @@ class LiveSearchProbe {
     }
 
     @Test
+    fun pspOverHttp() = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val http = HttpClient()
+        for ((id, address) in listOf(
+            "romspedia" to "http://www.romspedia.com", "retrostic" to "http://www.retrostic.com",
+            "romsdl" to "http://romsdl.com", "romsfun" to "http://romsfun.com",
+        )) {
+            val source = SourceDefs.build(id, http, address)!!
+            val result = runCatching { source.browse("psp", 200) }
+            println("$id via $address: " + result.fold({ "${it.size} PSP games, first: ${it.firstOrNull()?.title}" }, { "FAILED ${it.message}" }))
+        }
+    }
+
+    @Test
     fun pageTwo() = runBlocking {
         Assume.assumeTrue(System.getProperty("live") == "1")
         val http = HttpClient()

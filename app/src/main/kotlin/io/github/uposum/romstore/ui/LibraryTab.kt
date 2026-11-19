@@ -76,8 +76,11 @@ fun LibraryTab(vm: AppViewModel) {
         return
     }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 14.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Library", style = T.h1, fontSize = 24.sp)
+        Row(
+            Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = if (LocalDense.current) 6.dp else 14.dp, bottom = if (LocalDense.current) 6.dp else 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Library", style = T.h1, fontSize = if (LocalDense.current) 18.sp else 24.sp)
             Spacer(Modifier.width(10.dp))
             Text("${games.size} game${if (games.size == 1) "" else "s"} · ${formatBytes(games.sumOf { it.size }).ifEmpty { "0B" }}", style = T.body2)
             Spacer(Modifier.weight(1f))
@@ -96,10 +99,10 @@ fun LibraryTab(vm: AppViewModel) {
             return
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(116.dp),
+            columns = GridCells.Adaptive(if (LocalDense.current) 84.dp else 116.dp),
             contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (LocalDense.current) 10.dp else 18.dp),
+            verticalArrangement = Arrangement.spacedBy(if (LocalDense.current) 12.dp else 18.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
             items(shown, key = { it.id }) { game ->

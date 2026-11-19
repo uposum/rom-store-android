@@ -135,7 +135,7 @@ fun Cover(
                 onError = { if (attempt < candidates.size) attempt++ },
             )
         }
-        if (showChip) ConsoleChip(system, Modifier.align(Alignment.TopStart).padding(6.dp))
+        if (showChip) ConsoleChip(system, Modifier.align(Alignment.TopStart).padding(if (LocalDense.current) 3.dp else 6.dp))
     }
 }
 
@@ -143,21 +143,27 @@ fun Cover(
 @Composable
 fun NoArt(title: String, system: String, big: Boolean = false, faint: Boolean = false) {
     val tint = systemTint(system)
-    Box(
+    androidx.compose.foundation.layout.BoxWithConstraints(
         Modifier.fillMaxSize().background(
             Brush.verticalGradient(listOf(tint.copy(alpha = if (faint) 0.10f else 0.28f), C.surface)),
         ),
         contentAlignment = Alignment.Center,
     ) {
         if (!faint) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(10.dp)) {
+            // Text follows the tile's size: a 76 dp grid tile and a poster both read well.
+            val titleSize = (maxWidth.value / 8f).coerceIn(9f, if (big) 24f else 15f)
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(maxWidth * 0.07f)) {
                 Text(
                     title, color = C.text, textAlign = TextAlign.Center,
-                    fontSize = if (big) 22.sp else 13.sp, fontWeight = FontWeight.Bold,
-                    lineHeight = if (big) 26.sp else 16.sp, maxLines = 4, overflow = TextOverflow.Ellipsis,
+                    fontSize = titleSize.sp, fontWeight = FontWeight.Bold,
+                    lineHeight = (titleSize * 1.2f).sp, maxLines = 4, overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(4.dp))
-                Text(Systems.label(system).uppercase(), color = tint, fontSize = if (big) 12.sp else 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                Text(
+                    Systems.label(system).uppercase(), color = tint, textAlign = TextAlign.Center,
+                    fontSize = (titleSize * 0.62f).coerceAtLeast(7f).sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = (titleSize * 0.8f).sp,
+                )
             }
         }
     }
@@ -167,8 +173,9 @@ fun NoArt(title: String, system: String, big: Boolean = false, faint: Boolean = 
 fun ConsoleChip(system: String, modifier: Modifier = Modifier) {
     Text(
         Systems.label(system).uppercase(),
-        modifier = modifier.background(Color(0xCC0B0E13), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 3.dp),
-        style = T.chip, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        modifier = modifier.background(Color(0xCC0B0E13), RoundedCornerShape(if (LocalDense.current) 4.dp else 6.dp))
+            .padding(horizontal = if (LocalDense.current) 4.dp else 6.dp, vertical = if (LocalDense.current) 1.dp else 3.dp),
+        style = T.chip, fontSize = if (LocalDense.current) 7.sp else 9.sp, letterSpacing = 0.2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
     )
 }
 
@@ -255,10 +262,11 @@ fun <T> Selector(
     val shape = RoundedCornerShape(10.dp)
     Box(modifier) {
         Row(
-            Modifier.heightIn(min = 40.dp).pressable(shape = shape) { open = true }.background(C.surface, shape).padding(horizontal = 14.dp),
+            Modifier.heightIn(min = if (LocalDense.current) 30.dp else 40.dp).pressable(shape = shape) { open = true }.background(C.surface, shape)
+                .padding(horizontal = if (LocalDense.current) 10.dp else 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(options.firstOrNull { it.first == selected }?.second ?: label, color = C.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 180.dp))
+            Text(options.firstOrNull { it.first == selected }?.second ?: label, color = C.text, fontSize = if (LocalDense.current) 12.sp else 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 180.dp))
             Spacer(Modifier.width(6.dp))
             Icon(Icons.Rounded.KeyboardArrowDown, null, tint = C.text2, modifier = Modifier.size(18.dp))
         }
@@ -308,8 +316,9 @@ fun EmptyState(icon: ImageVector, title: String, text: String? = null, modifier:
 
 @Composable
 fun SectionTitle(text: String, count: String? = null, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null) {
-    Row(modifier.fillMaxWidth().padding(PaddingValues(bottom = 12.dp)), verticalAlignment = Alignment.Bottom) {
-        Text(text, style = T.h2)
+    val dense = LocalDense.current
+    Row(modifier.fillMaxWidth().padding(PaddingValues(bottom = if (dense) 6.dp else 12.dp)), verticalAlignment = Alignment.Bottom) {
+        Text(text, style = T.h2, fontSize = if (dense) 15.sp else 19.sp)
         if (count != null) {
             Spacer(Modifier.width(8.dp))
             Text(count, color = C.text3, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(bottom = 2.dp))

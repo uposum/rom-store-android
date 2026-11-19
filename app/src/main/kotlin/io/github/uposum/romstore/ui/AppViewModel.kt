@@ -93,6 +93,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _sources = MutableStateFlow<List<SourceInfo>>(emptyList())
     val sources = _sources.asStateFlow()
 
+    /** The cover that has focus in the results (named in the bar at the bottom). */
+    val focused = MutableStateFlow<MergedRom?>(null)
+
     /** The query typed in the search field (also when it was not run yet). */
     private val _query = MutableStateFlow("")
     val query = _query.asStateFlow()

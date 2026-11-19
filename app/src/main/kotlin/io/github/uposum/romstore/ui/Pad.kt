@@ -211,30 +211,39 @@ fun Modifier.focusRing(focused: Boolean, shape: Shape = RoundedCornerShape(10.dp
 @Composable
 fun Glyph(label: String, modifier: Modifier = Modifier) {
     val round = label.length == 1
+    val size = if (LocalDense.current) 18.dp else 22.dp
     Box(
         modifier
-            .then(if (round) Modifier.size(22.dp) else Modifier.height(22.dp).widthIn(min = 30.dp))
+            .then(if (round) Modifier.size(size) else Modifier.height(size).widthIn(min = size + 8.dp))
             .background(C.surface2, if (round) CircleShape else RoundedCornerShape(6.dp))
             .padding(horizontal = if (round) 0.dp else 6.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = C.text, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text(label, color = C.text, fontSize = if (LocalDense.current) 10.sp else 11.sp, fontWeight = FontWeight.Bold)
     }
 }
 
 /** The bottom bar that says what the buttons do (only with a gamepad). */
 @Composable
-fun HintBar(hints: List<Pair<String, String>>, modifier: Modifier = Modifier) {
+fun HintBar(
+    hints: List<Pair<String, String>>,
+    modifier: Modifier = Modifier,
+    /** Left side of the bar: the game in focus (covers carry no title). */
+    leading: (@Composable androidx.compose.foundation.layout.RowScope.() -> Unit)? = null,
+) {
+    val dense = LocalDense.current
     Row(
-        modifier.fillMaxWidth().background(C.bar).padding(horizontal = 20.dp, vertical = 7.dp),
-        horizontalArrangement = Arrangement.End,
+        modifier.fillMaxWidth().background(C.bar)
+            .padding(horizontal = if (dense) 16.dp else 20.dp, vertical = if (dense) 4.dp else 7.dp)
+            .height(if (dense) 26.dp else 30.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) { leading?.invoke(this) }
         hints.forEachIndexed { i, (button, action) ->
-            if (i > 0) Spacer(Modifier.width(18.dp))
+            Spacer(Modifier.width(if (i == 0) 12.dp else if (dense) 14.dp else 18.dp))
             Glyph(button)
-            Spacer(Modifier.width(7.dp))
-            Text(action, color = C.text2, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(6.dp))
+            Text(action, color = C.text2, fontSize = if (dense) 12.sp else 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         }
     }
 }

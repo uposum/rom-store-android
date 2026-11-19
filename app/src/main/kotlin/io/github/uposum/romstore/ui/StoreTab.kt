@@ -39,6 +39,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -84,10 +85,11 @@ private fun HomeView(vm: AppViewModel, onSetup: () -> Unit) {
     val pickLibrary = rememberFolderPicker { vm.setLibraryFolder(it) }
     val noSources = settings.configuredSources.isEmpty()
 
+    val dense = LocalDense.current
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(28.dp),
+        contentPadding = PaddingValues(start = if (dense) 14.dp else 24.dp, end = if (dense) 14.dp else 24.dp, top = if (dense) 8.dp else 20.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(if (dense) 14.dp else 28.dp),
     ) {
         if (noSources || settings.libraryUri == null) {
             item {
@@ -128,26 +130,26 @@ private fun SetupCard(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
     }
 }
 
-private const val SHELF_HEIGHT = 168
+private val SHELF_HEIGHT: Int @Composable get() = if (LocalDense.current) 118 else 168
 
 @Composable
 private fun Shelf(title: String, items: List<ShelfItem>, vm: AppViewModel) {
     Column {
         SectionTitle(title, "${items.size}")
         // Shifted left by the ring's width and padded back, so the focus ring is not clipped.
-        LazyRow(Modifier.offset(x = (-8).dp), horizontalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(start = 8.dp, end = 24.dp, top = 6.dp, bottom = 6.dp)) {
+        LazyRow(Modifier.offset(x = (-8).dp), horizontalArrangement = Arrangement.spacedBy(if (LocalDense.current) 10.dp else 16.dp), contentPadding = PaddingValues(start = 8.dp, end = 24.dp, top = 6.dp, bottom = 6.dp)) {
             items(items, key = { it.key }) { item ->
                 val ratio = coverRatio(item.cover, item.system)
-                Column(Modifier.width((SHELF_HEIGHT * ratio).dp.coerceAtLeast(96.dp))) {
+                Column(Modifier.width((SHELF_HEIGHT * ratio).dp.coerceAtLeast(if (LocalDense.current) 72.dp else 96.dp))) {
                     Cover(
                         item.cover, item.system, item.title,
                         Modifier.height(SHELF_HEIGHT.dp).coverShadow()
                             .pressable(shape = RectangleShape, onY = { vm.toggleFavorite(item.title, item.system, item.cover) }) { vm.openShelfItem(item) },
                         ratio = ratio,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    Text(item.title, style = T.h3, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp)
-                    Text(Systems.label(item.system), style = T.small)
+                    Spacer(Modifier.height(if (LocalDense.current) 4.dp else 8.dp))
+                    Text(item.title, style = T.h3, fontSize = if (LocalDense.current) 11.sp else 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = if (LocalDense.current) 13.sp else 16.sp)
+                    Text(Systems.label(item.system), style = T.small, fontSize = if (LocalDense.current) 10.sp else 12.sp)
                 }
             }
         }
@@ -159,18 +161,18 @@ private fun LibraryShelf(games: List<LibraryGame>, vm: AppViewModel) {
     Column {
         SectionTitle("In your library", "${games.size} game${if (games.size == 1) "" else "s"} · ${formatBytes(games.sumOf { it.size })}")
         // Shifted left by the ring's width and padded back, so the focus ring is not clipped.
-        LazyRow(Modifier.offset(x = (-8).dp), horizontalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(start = 8.dp, end = 24.dp, top = 6.dp, bottom = 6.dp)) {
+        LazyRow(Modifier.offset(x = (-8).dp), horizontalArrangement = Arrangement.spacedBy(if (LocalDense.current) 10.dp else 16.dp), contentPadding = PaddingValues(start = 8.dp, end = 24.dp, top = 6.dp, bottom = 6.dp)) {
             items(games.take(30), key = { it.id }) { game ->
                 val ratio = coverRatio(game.cover, game.system)
-                Column(Modifier.width((SHELF_HEIGHT * ratio).dp.coerceAtLeast(96.dp))) {
+                Column(Modifier.width((SHELF_HEIGHT * ratio).dp.coerceAtLeast(if (LocalDense.current) 72.dp else 96.dp))) {
                     Cover(
                         game.cover, game.system, game.name ?: game.title,
                         Modifier.height(SHELF_HEIGHT.dp).coverShadow().pressable(shape = RectangleShape) { vm.openLibraryGame(game) },
                         ratio = ratio,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    Text(game.name ?: game.title, style = T.h3, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp)
-                    Text(Systems.label(game.system), style = T.small)
+                    Spacer(Modifier.height(if (LocalDense.current) 4.dp else 8.dp))
+                    Text(game.name ?: game.title, style = T.h3, fontSize = if (LocalDense.current) 11.sp else 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = if (LocalDense.current) 13.sp else 16.sp)
+                    Text(Systems.label(game.system), style = T.small, fontSize = if (LocalDense.current) 10.sp else 12.sp)
                 }
             }
         }
@@ -198,11 +200,11 @@ private fun ConsoleTile(key: String, modifier: Modifier, onClick: () -> Unit) {
     val tint = systemTint(key)
     val shape = RoundedCornerShape(14.dp)
     Row(
-        modifier.heightIn(min = 64.dp).pressable(shape = shape, onClick = onClick).background(C.surface, shape),
+        modifier.heightIn(min = if (LocalDense.current) 46.dp else 64.dp).pressable(shape = shape, onClick = onClick).background(C.surface, shape),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.width(5.dp).height(64.dp).background(tint, RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp)))
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Box(Modifier.width(5.dp).height(if (LocalDense.current) 46.dp else 64.dp).background(tint, RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp)))
+        Column(Modifier.padding(horizontal = 14.dp, vertical = if (LocalDense.current) 6.dp else 10.dp)) {
             Text(Systems.label(key), style = T.h3, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val full = Systems.name(key)
             if (full != Systems.label(key)) Text(full, style = T.small, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -219,7 +221,12 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val consoles by vm.consoles.collectAsStateWithLifecycle()
     val shown = remember(r) { r.shown }
-    var focused by remember(r.query, r.system) { mutableStateOf<MergedRom?>(null) }
+    val dense = LocalDense.current
+    // The focused cover is named in the bar at the bottom of the screen.
+    DisposableEffect(r.query, r.system) {
+        vm.focused.value = null
+        onDispose { vm.focused.value = null }
+    }
     val grid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
     val firstCard = remember { androidx.compose.ui.focus.FocusRequester() }
@@ -248,15 +255,33 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
 
     Column(Modifier.fillMaxSize()) {
         // Title and filters
-        Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 14.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        val side = if (dense) 14.dp else 24.dp
+        Row(
+            Modifier.fillMaxWidth().padding(start = side, end = side, top = if (dense) 5.dp else 14.dp, bottom = if (dense) 5.dp else 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
                 if (r.browse) Systems.label(r.system ?: "") else "“${r.query}”",
-                style = T.h1, fontSize = 24.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+                style = T.h1, fontSize = if (dense) 17.sp else 24.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
             )
             Spacer(Modifier.width(10.dp))
-            if (!r.loading) Text("${shown.size}${if (r.hasMore) "+" else ""} games", style = T.body2)
+            if (!r.loading) Text("${shown.size}${if (r.hasMore) "+" else ""} games", style = T.body2, fontSize = if (dense) 12.sp else 13.sp)
+            if (!r.loading && r.errors.isNotEmpty() && shown.isNotEmpty()) {
+                // Games were found: a failing source is a note, not a row of its own.
+                Spacer(Modifier.width(10.dp))
+                val shape = RoundedCornerShape(8.dp)
+                Row(
+                    Modifier.pressable(shape = shape) { vm.messages.tryEmit(errorText(r.errors)) }
+                        .background(C.surface, shape).padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.WarningAmber, null, tint = C.warn, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("${r.errors.size} source${if (r.errors.size == 1) "" else "s"} failed", color = C.warn, fontSize = 11.sp, maxLines = 1)
+                }
+            }
             Spacer(Modifier.weight(1f))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(if (dense) 6.dp else 8.dp)) {
                 if (!r.browse) item {
                     Selector("All consoles", listOf<Pair<String?, String>>(null to "All consoles") + consoles.map { it to Systems.label(it) }, r.system, vm::setConsoleFilter)
                 }
@@ -267,7 +292,7 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
                 item { Selector("Sort", SORTS, r.sort, vm::setSort) }
             }
         }
-        if (r.errors.isNotEmpty() && !r.loading) ErrorsLine(r.errors)
+        if (r.errors.isNotEmpty() && !r.loading && shown.isEmpty()) ErrorsLine(r.errors)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 r.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -275,25 +300,40 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
                 }
                 shown.isEmpty() -> EmptyState(
                     if (r.errors.isNotEmpty() && r.all.isEmpty()) Icons.Rounded.CloudOff else Icons.Rounded.SearchOff,
-                    if (r.all.isEmpty()) "Nothing found" else "Nothing in this region or source",
+                    when {
+                        r.all.isEmpty() && r.errors.size >= settings.configuredSources.size && r.errors.isNotEmpty() -> "Your sources didn't answer"
+                        r.all.isEmpty() -> "Nothing found"
+                        else -> "Nothing in this region or source"
+                    },
                     when {
                         settings.configuredSources.isEmpty() -> "Set up a source in Settings → Sources first."
+                        r.all.isEmpty() && r.errors.size >= settings.configuredSources.size && r.errors.isNotEmpty() ->
+                            "Every source failed (see above). Check the connection and the addresses in Settings → Sources."
+                        r.all.isEmpty() && r.browse -> "Your sources list no games for this console."
                         r.all.isEmpty() -> "Try another spelling, or fewer words."
                         else -> "Change the filters above to see the other ${r.all.size}."
                     },
                 )
                 else -> LazyVerticalGrid(
                     state = grid,
-                    columns = GridCells.Adaptive(if (settings.showTitles) 128.dp else 116.dp),
-                    contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                    // Handhelds: ~8 covers a row and two rows on screen.
+                    columns = GridCells.Adaptive(
+                        when {
+                            dense && settings.showTitles -> 92.dp
+                            dense -> 76.dp
+                            settings.showTitles -> 128.dp
+                            else -> 116.dp
+                        },
+                    ),
+                    contentPadding = PaddingValues(start = side, end = side, top = if (dense) 4.dp else 6.dp, bottom = if (dense) 12.dp else 24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (dense) 10.dp else 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (dense) 12.dp else 20.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(shown, key = { vm.gameKey(it) + it.id }) { rom ->
                         GridCard(rom, settings.showTitles, chip = !r.browse,
                             modifier = if (rom === shown.first()) Modifier.focusRequester(firstCard) else Modifier,
-                            onFocus = { focused = rom },
+                            onFocus = { vm.focused.value = rom },
                             onFavorite = { vm.toggleFavorite(rom.title, rom.system, rom.cover) },
                         ) { vm.openGame(rom, shown) }
                     }
@@ -305,9 +345,10 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
                 }
             }
         }
-        if (gamepad || focused != null) InfoStrip(focused)
     }
 }
+
+private fun errorText(errors: Map<String, String>) = errors.entries.joinToString(" · ") { "${SourceDefs.label(it.key)}: ${it.value}" }
 
 @Composable
 private fun ErrorsLine(errors: Map<String, String>) {
@@ -315,7 +356,7 @@ private fun ErrorsLine(errors: Map<String, String>) {
         Icon(Icons.Rounded.WarningAmber, null, tint = C.warn, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(6.dp))
         Text(
-            errors.entries.joinToString(" · ") { "${SourceDefs.label(it.key)}: ${it.value}" },
+            errorText(errors),
             style = T.small, color = C.warn, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
     }
@@ -341,30 +382,26 @@ private fun GridCard(rom: MergedRom, showTitle: Boolean, chip: Boolean, modifier
     }
 }
 
-/** Names the focused cover (covers carry no title). */
+/** Names the focused cover (covers carry no title); shown in the bar at the bottom. */
 @Composable
-private fun InfoStrip(rom: MergedRom?) {
-    Row(
-        Modifier.fillMaxWidth().background(C.bar).padding(horizontal = 24.dp, vertical = 10.dp).heightIn(min = 26.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (rom == null) return@Row
-        Text(rom.title, style = T.h3, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-        val facts = listOfNotNull(
-            Systems.label(rom.system),
-            rom.year?.toString(),
-            formatBytes(rom.size).ifEmpty { null },
-            rom.downloads?.let { "${formatCount(it)} downloads" },
-        )
-        for (fact in facts) {
-            Text("  ·  ", color = C.text3, fontSize = 13.sp)
-            Text(fact, style = T.body2, maxLines = 1)
-        }
-        rom.rating?.let {
-            Text("  ·  ", color = C.text3, fontSize = 13.sp)
-            Icon(Icons.Rounded.Star, null, tint = C.star, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(3.dp))
-            Text(String.format("%.1f", it), color = C.star, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-        }
+fun androidx.compose.foundation.layout.RowScope.FocusedInfo(rom: MergedRom) {
+    val dense = LocalDense.current
+    val small = if (dense) 12.sp else 13.sp
+    Text(rom.title, style = T.h3, fontSize = if (dense) 13.sp else 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+    val facts = listOfNotNull(
+        Systems.label(rom.system),
+        rom.year?.toString(),
+        formatBytes(rom.size).ifEmpty { null },
+        rom.downloads?.let { "${formatCount(it)} downloads" },
+    )
+    for (fact in facts) {
+        Text("  ·  ", color = C.text3, fontSize = small)
+        Text(fact, color = C.text2, fontSize = small, maxLines = 1)
+    }
+    rom.rating?.let {
+        Text("  ·  ", color = C.text3, fontSize = small)
+        Icon(Icons.Rounded.Star, null, tint = C.star, modifier = Modifier.size(if (dense) 13.dp else 15.dp))
+        Spacer(Modifier.width(3.dp))
+        Text(String.format("%.1f", it), color = C.star, fontSize = small, fontWeight = FontWeight.Bold)
     }
 }

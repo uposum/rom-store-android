@@ -135,9 +135,12 @@ fun Shell(vm: AppViewModel) {
                     Tab.Settings -> SettingsTab(vm, settingsSection) { settingsSection = it }
                 }
             }
-            if (gamepad && game == null && libraryGame == null) {
+            val focusedRom by vm.focused.collectAsStateWithLifecycle()
+            val showFocused = tab == Tab.Store && results != null && focusedRom != null
+            if ((gamepad || showFocused) && game == null && libraryGame == null) {
                 HintBar(
-                    when (tab) {
+                    leading = if (showFocused) ({ FocusedInfo(focusedRom!!) }) else null,
+                    hints = if (!gamepad) emptyList() else when (tab) {
                         Tab.Store -> if (results != null) listOf("Y" to "Favourite", "X" to "Search", "B" to "Back", "A" to "Open")
                         else listOf("X" to "Search", "A" to "Open")
                         Tab.Library -> listOf("B" to "Store", "A" to "Open")
@@ -153,7 +156,7 @@ fun Shell(vm: AppViewModel) {
         AnimatedVisibility(visible = libraryGame != null, enter = fadeIn(), exit = fadeOut()) {
             libraryGame?.let { LibraryGamePage(vm, it, gamepad) }
         }
-        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = if (gamepad) 52.dp else 20.dp)) { data ->
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = if (gamepad) 44.dp else 20.dp)) { data ->
             Snackbar(
                 containerColor = C.surface2, contentColor = C.text, shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.widthIn(max = 520.dp),
@@ -169,19 +172,21 @@ private fun TopBar(vm: AppViewModel, tab: Tab, active: Int, activeJobs: List<io.
         val oneRow = maxWidth >= 760.dp
         val wideEnough = maxWidth >= 560.dp
         val searchWidth = minOf(360.dp, maxWidth * 0.34f)
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        val dense = LocalDense.current
+        val logo = if (dense) 24.dp else 32.dp
+        Column(Modifier.fillMaxWidth().padding(horizontal = if (dense) 12.dp else 16.dp, vertical = if (dense) 3.dp else 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    Modifier.size(32.dp).background(Brush.linearGradient(listOf(Color(0xFF3B8CFF), Color(0xFF1550D6))), RoundedCornerShape(9.dp)),
+                    Modifier.size(logo).background(Brush.linearGradient(listOf(Color(0xFF3B8CFF), Color(0xFF1550D6))), RoundedCornerShape(if (dense) 7.dp else 9.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(androidx.compose.ui.res.painterResource(R.drawable.ic_launcher_foreground), null, tint = Color.Unspecified, modifier = Modifier.size(44.dp))
+                    Icon(androidx.compose.ui.res.painterResource(R.drawable.ic_launcher_foreground), null, tint = Color.Unspecified, modifier = Modifier.size(logo * 1.38f))
                 }
                 if (wideEnough) {
-                    Spacer(Modifier.width(10.dp))
-                    Text("ROM Store", style = T.brand, maxLines = 1)
+                    Spacer(Modifier.width(if (dense) 8.dp else 10.dp))
+                    Text("ROM Store", style = T.brand, fontSize = if (dense) 14.sp else 17.sp, maxLines = 1)
                 }
-                Spacer(Modifier.width(14.dp))
+                Spacer(Modifier.width(if (dense) 10.dp else 14.dp))
                 if (gamepad) { Glyph("L1"); Spacer(Modifier.width(6.dp)) }
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     Tab.entries.forEach { t ->
@@ -209,15 +214,16 @@ private fun TopBar(vm: AppViewModel, tab: Tab, active: Int, activeJobs: List<io.
 
 @Composable
 private fun TabPill(tab: Tab, selected: Boolean, badge: Int, progress: Float?, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(10.dp)
+    val dense = LocalDense.current
+    val shape = RoundedCornerShape(if (dense) 8.dp else 10.dp)
     Column(
         Modifier.pressable(shape = shape, onClick = onClick)
             .background(if (selected) C.surface2 else Color.Transparent, shape)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = if (dense) 10.dp else 14.dp, vertical = if (dense) 4.dp else 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(tab.label, style = T.tab, color = if (selected) C.text else C.text2)
+            Text(tab.label, style = T.tab, fontSize = if (dense) 13.sp else 15.sp, color = if (selected) C.text else C.text2)
             if (badge > 0) {
                 Spacer(Modifier.width(6.dp))
                 Box(Modifier.size(18.dp).background(C.accent, CircleShape), contentAlignment = Alignment.Center) {
@@ -226,8 +232,8 @@ private fun TabPill(tab: Tab, selected: Boolean, badge: Int, progress: Float?, o
             }
         }
         if (progress != null) {
-            Spacer(Modifier.height(4.dp))
-            ProgressLine(progress, Modifier.width(56.dp))
+            Spacer(Modifier.height(if (dense) 2.dp else 4.dp))
+            ProgressLine(progress, Modifier.width(if (dense) 44.dp else 56.dp).height(if (dense) 2.dp else 4.dp))
         }
     }
 }
@@ -263,13 +269,13 @@ private fun SearchField(vm: AppViewModel, modifier: Modifier) {
     }
 
     Row(
-        modifier.height(44.dp)
+        modifier.height(if (LocalDense.current) 32.dp else 44.dp)
             .then(if (!editing) Modifier.pressable(shape = shape) { editing = true } else Modifier)
             .background(C.surface, shape)
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Rounded.Search, null, tint = C.text2, modifier = Modifier.size(20.dp))
+        Icon(Icons.Rounded.Search, null, tint = C.text2, modifier = Modifier.size(if (LocalDense.current) 17.dp else 20.dp))
         Spacer(Modifier.width(10.dp))
         Box(Modifier.weight(1f)) {
             if (editing) {
@@ -277,7 +283,7 @@ private fun SearchField(vm: AppViewModel, modifier: Modifier) {
                     value = query,
                     onValueChange = vm::setQuery,
                     singleLine = true,
-                    textStyle = TextStyle(color = C.text, fontSize = 15.sp),
+                    textStyle = TextStyle(color = C.text, fontSize = if (LocalDense.current) 13.sp else 15.sp),
                     cursorBrush = SolidColor(C.accent),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { submit() }, onDone = { submit() }),
@@ -298,7 +304,7 @@ private fun SearchField(vm: AppViewModel, modifier: Modifier) {
             }
             if (!editing) {
                 Text(
-                    query.ifEmpty { "Search games" }, color = if (query.isEmpty()) C.text3 else C.text, fontSize = 15.sp,
+                    query.ifEmpty { "Search games" }, color = if (query.isEmpty()) C.text3 else C.text, fontSize = if (LocalDense.current) 13.sp else 15.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }

@@ -40,8 +40,20 @@ object T {
     val chip = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Bold, color = C.text, letterSpacing = 0.4.sp)
 }
 
+/**
+ * True on short screens (a handheld in landscape is ~400 dp tall): bars,
+ * filters and covers get tighter so the grid shows about twice as many games.
+ */
+val LocalDense = androidx.compose.runtime.staticCompositionLocalOf { false }
+
 @Composable
 fun RomStoreTheme(content: @Composable () -> Unit) {
+    val dense = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp < 560
+    androidx.compose.runtime.CompositionLocalProvider(LocalDense provides dense) { Themed(content) }
+}
+
+@Composable
+private fun Themed(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = C.accent, onPrimary = Color.White, background = C.bg, onBackground = C.text,
