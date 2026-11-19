@@ -9,6 +9,10 @@ on:
       tag:
         description: "Tag to build (vX.Y.Z)"
         required: true
+      dry_run:
+        description: "Build and check only, do not publish"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -81,7 +85,12 @@ jobs:
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | head -3
+          CERTS=$("$BUILD_TOOLS/apksigner" verify --print-certs "$APK")
+          echo "$CERTS" | head -3
+          # A missing or broken key file must never publish a debug-signed APK.
+          if [ "${{ steps.key.outputs.signed }}" = "true" ] && echo "$CERTS" | grep -q "CN=Android Debug"; then
+            echo "Signed with the debug key although release secrets are set: check ROMSTORE_* secrets" >&2; exit 1
+          fi
           BADGING=$("$BUILD_TOOLS/aapt2" dump badging "$APK" | head -1)
           echo "$BADGING"
           echo "$BADGING" | grep -q "versionName='${{ steps.version.outputs.name }}'" || { echo "versionName does not match the tag" >&2; exit 1; }
@@ -91,17 +100,17 @@ jobs:
           cp "$APK" dist/ROM-Store.apk
           (cd dist && sha256sum *.apk > SHA256SUMS.txt)
 
-      - name: Keep the unsigned build as an artifact
-        if: steps.key.outputs.signed != 'true'
+      - name: Keep the build as an artifact
+        if: steps.key.outputs.signed != 'true' || github.event.inputs.dry_run == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ROM-Store-${{ env.TAG }}-unsigned
+          name: ROM-Store-${{ env.TAG }}-${{ steps.key.outputs.signed == 'true' && 'signed' || 'unsigned' }}
           path: dist/*
 
       # Only a build signed with the release key is published: anything else
       # would not install over the copies people already have.
       - name: Publish the release
-        if: steps.key.outputs.signed == 'true'
+        if: steps.key.outputs.signed == 'true' && github.event.inputs.dry_run != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
