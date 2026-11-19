@@ -1,0 +1,172 @@
+package io.github.uposum.romstore.core.store
+
+import io.github.uposum.romstore.core.model.LibraryFile
+import io.github.uposum.romstore.core.model.LibraryGame
+import io.github.uposum.romstore.core.model.matchTitle
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * What is in the ROM library: the "In library" badge, the list of installed
+ * games, and uninstalling them (backend/library.py).
+ */
+object LibraryScan {
+    // Not games: frontends' notes in every console folder, saves, artwork, configs.
+    private val SKIP_NAMES = setOf("systeminfo.txt", "metadata.txt", "readme.txt", "_info.txt", "desktop.ini", "thumbs.db", ".gitkeep", ".nomedia")
+    private val SKIP_EXTENSIONS = setOf(
+        "txt", "md", "nfo", "xml", "json", "ini", "cfg", "db", "dat", "log",
+        "png", "jpg", "jpeg", "webp", "gif", "mp4",
+        "srm", "sav", "state", "sta", "mcr", "dsv", "eep", "fla", "sra", "rtc",
+        "part", "tmp",
+    )
+    private val SKIP_FOLDERS = setOf("media", "images", "videos", "manuals", "screenshots", "saves", "states", "snap", "downloaded_images")
+
+    // Emulator storage that can sit inside console folders.
+    private val EMULATOR_FOLDERS = setOf(
+        "installedgames", "mlc01", "roms", "nand", "sys", "usr", "sdcard", "ux0",
+        "bios", "firmware", "keys", "shaders", "shadercache", "cache", "content",
+        "update", "updates", "dlc", "patches", "textures", "cheats", "mods",
+        "config", "configs", "logs", "temp", "tmp",
+    )
+
+    /** No game is smaller, all its files together. */
+    const val MIN_GAME_BYTES = 1024L
+
+    /** A file name that can belong to a game (not a note, save or picture). */
+    fun counts(name: String): Boolean {
+        val lower = name.lowercase()
+        val ext = if ('.' in lower) lower.substringAfterLast('.') else ""
+        return !(lower.startsWith(".") || lower in SKIP_NAMES || ext in SKIP_EXTENSIONS)
+    }
+
+    private fun hasGameData(folder: FolderNode, depth: Int = 0): Boolean {
+        var total = 0L
+        for (node in folder.list()) {
+            if (node.name.startsWith(".")) continue
+            if (node.isDirectory) {
+                if (depth < 4) folder.asFolder(node)?.let { if (hasGameData(it, depth + 1)) return true }
+                continue
+            }
+            if (!counts(node.name)) continue
+            total += node.size
+            if (total >= MIN_GAME_BYTES) return true
+        }
+        return false
+    }
+
+    private fun isGame(parent: FolderNode, node: FileNode): Boolean {
+        val name = node.name.lowercase()
+        if (!counts(name)) return false
+        if (node.isDirectory) {
+            if (name in SKIP_FOLDERS || name in EMULATOR_FOLDERS) return false
+            return parent.asFolder(node)?.let { hasGameData(it) } ?: false
+        }
+        return true
+    }
+
+    fun sizeOf(parent: FolderNode, node: FileNode, depth: Int = 0): Long {
+        if (!node.isDirectory) return node.size
+        val folder = parent.asFolder(node) ?: return 0
+        if (depth > 6) return 0
+        return folder.list().sumOf { sizeOf(folder, it, depth + 1) }
+    }
+
+    fun gameId(system: String, key: String): String {
+        val digest = MessageDigest.getInstance("SHA-1").digest("$system|$key".toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }.take(16)
+    }
+
+    /** Every game in the console folders of a library, newest first. Files
+     * that belong to one game share a title and are listed together. */
+    fun installedGames(library: RomLibrary): List<LibraryGame> {
+        val games = mutableListOf<LibraryGame>()
+        for ((system, folder) in library.consoleFolders()) {
+            val grouped = LinkedHashMap<String, MutableList<FileNode>>()
+            val children = try { folder.list() } catch (_: Exception) { continue }
+            for (node in children) {
+                if (!isGame(folder, node)) continue
+                val key = matchTitle(node.name).ifEmpty { node.name.lowercase() }
+                grouped.getOrPut(key) { mutableListOf() }.add(node)
+            }
+            for ((key, nodes) in grouped) {
+                nodes.sortWith(compareBy({ it.name.length }, { it.name }))
+                val files = nodes.map { LibraryFile(it.name, sizeOf(folder, it), it.isDirectory, it.id) }
+                val size = files.sumOf { it.size }
+                if (size < MIN_GAME_BYTES) continue
+                val first = nodes.first()
+                val title = if (first.isDirectory) first.name else first.name.substringBeforeLast('.', first.name)
+                games += LibraryGame(
+                    id = gameId(system, key),
+                    system = system,
+                    title = title,
+                    folder = folder.id,
+                    files = files,
+                    size = size,
+                    modified = nodes.maxOf { it.modified },
+                )
+            }
+        }
+        games.sortByDescending { it.modified }
+        return games
+    }
+
+    data class UninstallResult(val ok: Boolean, val removed: Int = 0, val freed: Long = 0, val title: String? = null, val error: String? = null)
+
+    /** Delete one installed game's files. The game is looked up again by id,
+     * and only entries directly inside its console folder are removed. */
+    fun uninstall(library: RomLibrary, gameId: String): UninstallResult {
+        val game = installedGames(library).firstOrNull { it.id == gameId }
+            ?: return UninstallResult(false, error = "That game is no longer in the library.")
+        val folder = library.folderById(game.folder) ?: return UninstallResult(false, error = "The console folder is gone.")
+        val children = folder.list().associateBy { it.name }
+        var removed = 0
+        var freed = 0L
+        val errors = mutableListOf<String>()
+        for (file in game.files) {
+            val node = children[file.name]
+            if (node == null) {
+                errors += "${file.name}: not found"
+                continue
+            }
+            if (node.delete()) {
+                removed++
+                freed += file.size
+            } else {
+                errors += "${file.name}: could not be deleted"
+            }
+        }
+        return UninstallResult(errors.isEmpty(), removed, freed, game.title, errors.joinToString("; ").ifEmpty { null })
+    }
+}
+
+/**
+ * Matching keys of the files in each console folder. A folder is only listed
+ * again when its modification time changes, so marking a page of results
+ * costs one lookup per console.
+ */
+class LibraryIndex {
+    private val folders = ConcurrentHashMap<String, Pair<Long, Set<String>>>()
+
+    fun keys(folder: FolderNode?): Set<String> {
+        folder ?: return emptySet()
+        val mtime = folder.modified
+        folders[folder.id]?.let { if (it.first == mtime && mtime != 0L) return it.second }
+        val keys = try {
+            folder.list()
+                .filterNot { it.name.startsWith(".") || it.name.endsWith(".part") }
+                .mapNotNull { matchTitle(it.name).ifEmpty { null } }
+                .toSet()
+        } catch (_: Exception) {
+            return emptySet()
+        }
+        folders[folder.id] = mtime to keys
+        return keys
+    }
+
+    fun contains(folder: FolderNode?, title: String): Boolean {
+        val key = matchTitle(title)
+        return key.isNotEmpty() && key in keys(folder)
+    }
+
+    fun clear() = folders.clear()
+}
