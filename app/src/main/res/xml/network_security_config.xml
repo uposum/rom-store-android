@@ -1,10 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The catalogue sites, their file hosts and some image hosts still answer
-     or redirect over plain http; the Deck plugin fetched those too. -->
+     or redirect over plain http; the Deck plugin fetched those too.
+
+     Trust: the system's roots, plus public roots that older Android versions
+     do not ship yet. Without them a site whose certificate chains to one of
+     these fails with "Trust anchor for certification path not found"
+     (1fichier: GlobalSign Root R46). These are extra roots, verified in full
+     like any other; nothing is switched off.
+       GlobalSign Root R46  SHA-256 4F:A3:12:6D:8D:3A:11:D1:C4:85:5A:4F:80:7C:BA:D6:CF:91:9D:3A:5A:88:B0:3B:EA:2C:63:72:D9:3C:40:C9
+       GlobalSign Root E46  SHA-256 CB:B9:C4:4D:84:B8:04:3E:10:50:EA:31:A6:9F:51:49:55:D7:BF:D2:E2:C6:B4:93:01:01:9A:D6:1D:9F:50:58
+       ISRG Root X2         SHA-256 69:72:9B:8E:15:A8:6E:FC:17:7A:57:AF:B7:17:1D:FC:64:AD:D2:8C:2F:CA:8C:F1:50:7E:34:45:3C:CB:14:70 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
+            <certificates src="@raw/ca_globalsign_root_r46" />
+            <certificates src="@raw/ca_globalsign_root_e46" />
+            <certificates src="@raw/ca_isrg_root_x2" />
         </trust-anchors>
     </base-config>
 </network-security-config>

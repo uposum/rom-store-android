@@ -195,6 +195,8 @@ open class HttpClient(
             throw HttpError("Host not found: ${host(url)}", url = url)
         } catch (e: InterruptedIOException) {
             throw HttpError("Request timed out: $url", url = url)
+        } catch (e: javax.net.ssl.SSLException) {
+            throw HttpError(tlsMessage(host(url), e), url = url, retry = false)
         } catch (e: IOException) {
             throw HttpError("Request failed: ${e.message ?: e.javaClass.simpleName}", url = url)
         } catch (e: IllegalArgumentException) {
@@ -274,6 +276,16 @@ open class HttpClient(
     }
 
     /** A clear reason when a file server wants a browser, else null. */
+    /** A TLS failure in words: an unknown root is this device's certificate store, not the site. */
+    fun tlsMessage(host: String, e: Exception): String {
+        val text = generateSequence<Throwable>(e) { it.cause }.mapNotNull { it.message }.joinToString(" ")
+        return if ("trust anchor" in text.lowercase() || "certpath" in text.lowercase()) {
+            "This device does not trust $host's certificate (its root is missing from this Android version)"
+        } else {
+            "Secure connection to $host failed: ${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
     fun blocked(code: Int, headers: okhttp3.Headers, host: String): String? {
         val cloudflare = headers.values("Server").any { "cloudflare" in it.lowercase() } || headers["cf-mitigated"] != null
         if (code in setOf(403, 429, 503) && cloudflare) {
@@ -353,6 +365,8 @@ open class HttpClient(
             call.execute()
         } catch (e: UnknownHostException) {
             throw HttpError("Host not found: $host", url = url)
+        } catch (e: javax.net.ssl.SSLException) {
+            throw HttpError(tlsMessage(host, e), url = url, retry = false)
         } catch (e: IOException) {
             throw HttpError("Download failed: ${e.message}", url = url)
         }
