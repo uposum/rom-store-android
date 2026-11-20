@@ -46,13 +46,15 @@ object Unpack {
         scratch: File?,
         cancelled: () -> Boolean = { false },
         onProgress: (Long) -> Unit = {},
+        /** Where a file goes by its name (updates and DLC into their folders). */
+        route: (String) -> FolderNode = { destination },
     ): List<FileNode> {
         val produced = mutableListOf<FileNode>()
         var written = 0L
         fun copyEntry(name: String, input: InputStream) {
             val clean = Html.safeFilename(name.replace('\\', '/').substringAfterLast('/'), "")
             if (clean.isEmpty()) return
-            val node = destination.createFile(clean)
+            val node = route(clean).createFile(clean)
             produced += node
             node.openWrite(append = false).use { out ->
                 val buf = ByteArray(1 shl 20)

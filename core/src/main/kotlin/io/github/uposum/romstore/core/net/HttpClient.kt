@@ -137,6 +137,9 @@ open class HttpClient(
     private val noRedirect: OkHttpClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val downloadClient: OkHttpClient = client.newBuilder().readTimeout(120, TimeUnit.SECONDS).build()
 
+    /** For downloads handed over by the in-app browser: they bring their own Cookie header. */
+    private val downloadClientOwnCookies: OkHttpClient = downloadClient.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+
     private val hostLocks = ConcurrentHashMap<String, Mutex>()
     private val lastRequest = ConcurrentHashMap<String, Long>()
 
@@ -344,7 +347,8 @@ open class HttpClient(
             hdrs["Range"] = "bytes=$existing-"
             hdrs["Accept-Encoding"] = "identity"
         }
-        val call = downloadClient.newCall(build(url, "GET", null, hdrs))
+        val ownCookies = hdrs.keys.any { it.equals("Cookie", ignoreCase = true) }
+        val call = (if (ownCookies) downloadClientOwnCookies else downloadClient).newCall(build(url, "GET", null, hdrs))
         val response = try {
             call.execute()
         } catch (e: UnknownHostException) {

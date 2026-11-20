@@ -213,6 +213,72 @@ class StoreTest {
         assertNotNull(entries[1].cover)
     }
 
+    // --------------------------------------------------------- add-ons
+
+    @Test fun addOnPostsJoinTheirGame() {
+        val merged = Dedupe.merge(listOf(
+            RomEntry("a", "1", "Pokemon Scarlet Update v3.0.1", "switch"),
+            RomEntry("b", "2", "Pokémon Scarlet", "switch"),
+            RomEntry("a", "3", "Pokemon Scarlet + DLC", "switch"),
+        ))
+        assertEquals(1, merged.size)
+        assertEquals("Pokémon Scarlet", merged[0].title)
+        assertEquals(3, merged[0].entries.size)
+    }
+
+    @Test fun libraryAttachesUpdatesAndDlcAndDeletesThemWithTheGame() {
+        val root = File(dir, "ROMs")
+        File(root, "switch/updates").mkdirs()
+        File(root, "switch/dlc").mkdirs()
+        File(root, "switch/Zelda TOTK [0100F2C0115B6000][v0].nsp").writeBytes(ByteArray(5000))
+        File(root, "switch/updates/Zelda TOTK [0100F2C0115B6800][v196608].nsp").writeBytes(ByteArray(3000))
+        File(root, "switch/dlc/Something Else [0100F2C0115B7001][v0].nsp").writeBytes(ByteArray(2000))
+        File(root, "switch/Kirby Update v1.1.0.nsp").writeBytes(ByteArray(2000))
+        File(root, "switch/Kirby and the Forgotten Land.nsp").writeBytes(ByteArray(4000))
+        val library = JavaFileLibrary(root)
+        val games = LibraryScan.installedGames(library).associateBy { it.title }
+        assertEquals(setOf("Zelda TOTK [0100F2C0115B6000][v0]", "Kirby and the Forgotten Land"), games.keys)
+        val zelda = games.getValue("Zelda TOTK [0100F2C0115B6000][v0]")
+        assertEquals(listOf(io.github.uposum.romstore.core.model.ContentKind.UPDATE, io.github.uposum.romstore.core.model.ContentKind.DLC), zelda.addons.map { it.kind })
+        assertEquals(10_000L, zelda.size)
+        assertEquals(1, games.getValue("Kirby and the Forgotten Land").addons.size)
+        assertTrue(LibraryScan.uninstall(library, zelda.id).ok)
+        assertEquals(emptyList<String>(), File(root, "switch/updates").list()!!.toList())
+        assertEquals(emptyList<String>(), File(root, "switch/dlc").list()!!.toList())
+    }
+
+    @Test fun unpackRoutesAddOnsIntoTheirFolders() {
+        val root = File(dir, "ROMs/switch").apply { mkdirs() }
+        val archive = File(dir, "bundle.zip")
+        archive.writeBytes(zipOf(
+            "Game [0100F2C0115B6000][v0].nsp" to ByteArray(100),
+            "Game [0100F2C0115B6800][v65536].nsp" to ByteArray(50),
+            "Game DLC [0100F2C0115B7001][v0].nsp" to ByteArray(20),
+        ))
+        val folder = JavaFolderNode(root)
+        Unpack.unpack(JavaFileNode(archive), folder, null, route = { name ->
+            when (io.github.uposum.romstore.core.model.Content.classify(name).kind) {
+                io.github.uposum.romstore.core.model.ContentKind.UPDATE -> folder.createFolder("updates")
+                io.github.uposum.romstore.core.model.ContentKind.DLC -> folder.createFolder("dlc")
+                else -> folder
+            }
+        })
+        assertTrue(File(root, "Game [0100F2C0115B6000][v0].nsp").isFile)
+        assertTrue(File(root, "updates/Game [0100F2C0115B6800][v65536].nsp").isFile)
+        assertTrue(File(root, "dlc/Game DLC [0100F2C0115B7001][v0].nsp").isFile)
+    }
+
+    @Test fun biosFilesAreNeverOffered() {
+        val settings = SettingsStore(File(dir, "s.json"))
+        val store = StoreService(settings, File(dir, "data"), File(dir, "cache"), library = { null })
+        val entry = RomEntry("romsfun", "1", "Quiz Daisousa Sen", "mame", files = listOf(
+            io.github.uposum.romstore.core.model.RomFile("a", "quizdais.zip", "https://x/quizdais.zip", 4_000_000, label = "Quiz Daisousa Sen · ROM"),
+            io.github.uposum.romstore.core.model.RomFile("b", "neogeo.zip", "https://x/neogeo.zip", 1_800_000, label = "BIOS: neogeo · BIOS"),
+        ))
+        val options = store.downloadOptions(Dedupe.merge(listOf(entry)).first())
+        assertEquals(listOf("quizdais.zip"), options.map { it.file.filename })
+    }
+
     @Test fun regionFilterKeepsUnknownGames() {
         val usa = Dedupe.merge(listOf(RomEntry("a", "1", "Game (USA)", "snes"))).first()
         val unknown = Dedupe.merge(listOf(RomEntry("a", "2", "Other", "snes"))).first()

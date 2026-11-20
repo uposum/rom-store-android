@@ -114,11 +114,34 @@ fun LibraryTab(vm: AppViewModel) {
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(game.name ?: game.title, style = T.h3, fontSize = 12.sp, lineHeight = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(formatBytes(game.size), style = T.small, fontSize = 11.sp)
+                    Text(formatBytes(game.size), style = T.small, fontSize = 11.sp, maxLines = 1)
+                    addonSummary(game).ifEmpty { null }?.let {
+                        Text("+ $it", color = C.accent, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
         }
     }
+}
+
+/** "update · 2 DLC" under a library cover. */
+private fun addonSummary(game: LibraryGame): String {
+    val updates = game.addons.count { it.kind == io.github.uposum.romstore.core.model.ContentKind.UPDATE }
+    val dlc = game.addons.count { it.kind == io.github.uposum.romstore.core.model.ContentKind.DLC }
+    return listOfNotNull(
+        if (updates > 0) "update" else null,
+        if (dlc > 0) "$dlc DLC" else null,
+    ).joinToString(" · ")
+}
+
+/** Emulators install updates and DLC themselves; where to find that. */
+private fun installHint(system: String): String = when (system) {
+    "switch" -> "Install them in your emulator: Eden, Citron or Sudachi: Install files to NAND. Ryujinx / Kenji-NX: the game's menu, Manage updates / Manage DLC."
+    "3ds" -> "Install the .cia files in your emulator (Azahar / Lime3DS / Citra: Install CIA)."
+    "wiiu" -> "Install them in Cemu: File → Install game title, update or DLC."
+    "ps3" -> "Install the .pkg files in RPCS3 or aPS3e: Install packages."
+    "psvita" -> "Install them in Vita3K: Install .pkg / .zip."
+    else -> "Install them from your emulator's menu."
 }
 
 @Composable
@@ -151,12 +174,12 @@ fun LibraryGamePage(vm: AppViewModel, game: LibraryGame, gamepad: Boolean) {
             val posterWidth = if (wide) minOf(maxWidth * 0.3f, (maxHeight - 80.dp) * ratio).coerceAtLeast(140.dp) else 200.dp
             Row(Modifier.fillMaxSize().padding(start = 32.dp, end = 28.dp, top = 28.dp)) {
                 if (wide) {
-                    Cover(game.cover, game.system, game.name ?: game.title, Modifier.width(posterWidth).coverShadow(), big = true)
+                    Cover(game.cover, game.system, game.name ?: game.title, Modifier.width(posterWidth).coverShadow(), big = !LocalDense.current)
                     Spacer(Modifier.width(32.dp))
                 }
                 Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
                     if (!wide) {
-                        Cover(game.cover, game.system, game.name ?: game.title, Modifier.width(posterWidth).coverShadow(), big = true)
+                        Cover(game.cover, game.system, game.name ?: game.title, Modifier.width(posterWidth).coverShadow(), big = !LocalDense.current)
                         Spacer(Modifier.height(16.dp))
                     }
                     Text(Systems.name(game.system).uppercase(), color = C.accent, fontSize = 13.sp, letterSpacing = 1.4.sp, style = T.h3)
@@ -165,27 +188,27 @@ fun LibraryGamePage(vm: AppViewModel, game: LibraryGame, gamepad: Boolean) {
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Pill(formatBytes(game.size))
-                        Pill("${game.files.size} file${if (game.files.size == 1) "" else "s"}")
+                        Pill("${game.files.size} file${if (game.files.size == 1) "" else "s"}" + if (game.addons.isNotEmpty()) " + ${game.addons.size} add-on${if (game.addons.size == 1) "" else "s"}" else "")
                     }
                     Spacer(Modifier.height(22.dp))
                     if (confirm) {
                         Text("Delete ${game.name ?: game.title}? This removes its files from the console folder.", style = T.body)
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Btn("Keep", { confirm = false }, Modifier.focusRequester(keep), kind = ButtonKind.Secondary, big = true)
-                            Btn("Delete", { vm.uninstall(game) }, kind = ButtonKind.Danger, icon = Icons.Rounded.Delete, big = true)
+                            Btn("Keep", { confirm = false }, Modifier.focusRequester(keep), kind = ButtonKind.Secondary, big = !LocalDense.current)
+                            Btn("Delete", { vm.uninstall(game) }, kind = ButtonKind.Danger, icon = Icons.Rounded.Delete, big = !LocalDense.current)
                         }
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             if (game.needsUnpack) {
-                                Btn("Unpack", { vm.unpack(game) }, Modifier.focusRequester(first), kind = ButtonKind.Primary, icon = Icons.Rounded.Unarchive, big = true)
+                                Btn("Unpack", { vm.unpack(game) }, Modifier.focusRequester(first), kind = ButtonKind.Primary, icon = Icons.Rounded.Unarchive, big = !LocalDense.current)
                             } else {
                                 Btn("Open with…", {
                                     vm.openWith(game)?.let { runCatching { context.startActivity(it) }.onFailure { vm.messages.tryEmit("No app can open this file") } }
-                                }, Modifier.focusRequester(first), kind = ButtonKind.Primary, icon = Icons.AutoMirrored.Rounded.OpenInNew, big = true)
+                                }, Modifier.focusRequester(first), kind = ButtonKind.Primary, icon = Icons.AutoMirrored.Rounded.OpenInNew, big = !LocalDense.current)
                             }
-                            Btn("Store page", { vm.storePage(game) }, icon = Icons.Rounded.Search, big = true)
-                            Btn("Delete", { confirm = true }, icon = Icons.Rounded.Delete, big = true)
+                            Btn("Store page", { vm.storePage(game) }, icon = Icons.Rounded.Search, big = !LocalDense.current)
+                            Btn("Delete", { confirm = true }, icon = Icons.Rounded.Delete, big = !LocalDense.current)
                         }
                     }
                     if (game.needsUnpack) {
@@ -203,6 +226,29 @@ fun LibraryGamePage(vm: AppViewModel, game: LibraryGame, gamepad: Boolean) {
                                 Text(formatBytes(file.size), style = T.small)
                             }
                         }
+                    }
+                    if (game.addons.isNotEmpty()) {
+                        Spacer(Modifier.height(24.dp))
+                        Text("Updates & DLC", style = T.h2)
+                        Spacer(Modifier.height(10.dp))
+                        Column(Modifier.background(C.surface, RoundedCornerShape(12.dp)).padding(vertical = 6.dp)) {
+                            game.addons.forEach { addon ->
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    val color = if (addon.kind == io.github.uposum.romstore.core.model.ContentKind.UPDATE) C.accent else Color(0xFFA877FF)
+                                    Text(
+                                        (if (addon.kind == io.github.uposum.romstore.core.model.ContentKind.UPDATE) "Update" + (addon.version?.let { " $it" } ?: "") else "DLC").uppercase(),
+                                        color = color, fontSize = 10.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, letterSpacing = 0.6.sp,
+                                        modifier = Modifier.background(color.copy(alpha = 0.15f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(addon.name, style = T.body, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(formatBytes(addon.size), style = T.small)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(installHint(game.system), style = T.small)
                     }
                     Spacer(Modifier.height(16.dp))
                     Text(vm.folderDescription(game.system) ?: "", style = T.small)

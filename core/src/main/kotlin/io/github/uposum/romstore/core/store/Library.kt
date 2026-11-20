@@ -1,6 +1,9 @@
 package io.github.uposum.romstore.core.store
 
 import io.github.uposum.romstore.core.model.LibraryFile
+import io.github.uposum.romstore.core.model.LibraryAddon
+import io.github.uposum.romstore.core.model.ContentKind
+import io.github.uposum.romstore.core.model.Content
 import io.github.uposum.romstore.core.model.LibraryGame
 import io.github.uposum.romstore.core.model.matchTitle
 import java.security.MessageDigest
@@ -83,11 +86,33 @@ object LibraryScan {
         for ((system, folder) in library.consoleFolders()) {
             val grouped = LinkedHashMap<String, MutableList<FileNode>>()
             val children = try { folder.list() } catch (_: Exception) { continue }
+            val addonSystem = system in Content.ADDON_SYSTEMS
+            // Updates and DLC: in updates/ and dlc/, or loose next to the games.
+            val addons = mutableListOf<Pair<FileNode, LibraryAddon>>()
             for (node in children) {
+                if (addonSystem && node.isDirectory && node.name.lowercase() in ADDON_FOLDERS) {
+                    val sub = folder.asFolder(node) ?: continue
+                    val fallback = if (node.name.lowercase().startsWith("dlc")) ContentKind.DLC else ContentKind.UPDATE
+                    for (file in runCatching { sub.list() }.getOrDefault(emptyList())) {
+                        if (file.isDirectory || !counts(file.name)) continue
+                        val info = Content.classify(file.name)
+                        val kind = if (info.isAddon) info.kind else fallback
+                        addons += file to LibraryAddon(file.name, file.size, kind, info.version, file.id, node.name)
+                    }
+                    continue
+                }
                 if (!isGame(folder, node)) continue
+                if (addonSystem && !node.isDirectory) {
+                    val info = Content.classify(node.name)
+                    if (info.isAddon) {
+                        addons += node to LibraryAddon(node.name, node.size, info.kind, info.version, node.id, null)
+                        continue
+                    }
+                }
                 val key = matchTitle(node.name).ifEmpty { node.name.lowercase() }
                 grouped.getOrPut(key) { mutableListOf() }.add(node)
             }
+            val folderGames = mutableListOf<LibraryGame>()
             for ((key, nodes) in grouped) {
                 nodes.sortWith(compareBy({ it.name.length }, { it.name }))
                 val files = nodes.map { LibraryFile(it.name, sizeOf(folder, it), it.isDirectory, it.id) }
@@ -95,7 +120,7 @@ object LibraryScan {
                 if (size < MIN_GAME_BYTES) continue
                 val first = nodes.first()
                 val title = if (first.isDirectory) first.name else first.name.substringBeforeLast('.', first.name)
-                games += LibraryGame(
+                folderGames += LibraryGame(
                     id = gameId(system, key),
                     system = system,
                     title = title,
@@ -105,10 +130,38 @@ object LibraryScan {
                     modified = nodes.maxOf { it.modified },
                 )
             }
+            // Each add-on joins its game: the same Switch title, else the same name.
+            val byGame = HashMap<String, MutableList<LibraryAddon>>()
+            for ((node, addon) in addons) {
+                val tid = Content.titleId(addon.name)?.let { Content.baseTitleId(it) }
+                val game = folderGames.firstOrNull { g -> tid != null && g.files.any { f -> Content.titleId(f.name)?.let { Content.baseTitleId(it) } == tid } }
+                    ?: Content.baseKey(addon.name.substringBeforeLast('.')).let { key ->
+                        folderGames.firstOrNull { g -> Content.baseKey(g.title) == key }
+                            // Sites shorten names ("Kirby Update" for "Kirby and the Forgotten Land"): one game that starts with it.
+                            ?: folderGames.filter { g -> key.length >= 4 && Content.baseKey(g.title).startsWith(key) }.singleOrNull()
+                    }
+                if (game != null) {
+                    byGame.getOrPut(game.id) { mutableListOf() } += addon
+                } else if (addon.subfolder == null) {
+                    // A loose add-on without its game stays visible (so it can be deleted).
+                    folderGames += LibraryGame(
+                        id = gameId(system, "addon:" + addon.name), system = system,
+                        title = node.name.substringBeforeLast('.', node.name), folder = folder.id,
+                        files = listOf(LibraryFile(node.name, node.size, false, node.id)),
+                        size = node.size, modified = node.modified,
+                    )
+                }
+            }
+            games += folderGames.map { g ->
+                val own = byGame[g.id] ?: return@map g
+                g.copy(addons = own.sortedWith(compareBy({ it.kind.ordinal }, { it.name })), size = g.size + own.sumOf { it.size })
+            }
         }
         games.sortByDescending { it.modified }
         return games
     }
+
+    private val ADDON_FOLDERS = setOf("updates", "update", "dlc", "dlcs")
 
     data class UninstallResult(val ok: Boolean, val removed: Int = 0, val freed: Long = 0, val title: String? = null, val error: String? = null)
 
@@ -134,6 +187,12 @@ object LibraryScan {
             } else {
                 errors += "${file.name}: could not be deleted"
             }
+        }
+        // Its updates and DLC are of no use without it.
+        for (addon in game.addons) {
+            val parent = addon.subfolder?.let { sub -> children[sub]?.let { folder.asFolder(it) } } ?: folder
+            val node = runCatching { parent.child(addon.name) }.getOrNull()
+            if (node != null && node.delete()) { removed++; freed += addon.size } else errors += "${addon.name}: could not be deleted"
         }
         return UninstallResult(errors.isEmpty(), removed, freed, game.title, errors.joinToString("; ").ifEmpty { null })
     }

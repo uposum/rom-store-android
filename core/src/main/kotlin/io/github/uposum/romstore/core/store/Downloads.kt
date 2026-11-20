@@ -64,6 +64,8 @@ data class DownloadJob(
     val cover: String? = null,
     /** Where the console folder is, for the Downloads tab ("Internal/ROMs/gba"). */
     val folderLabel: String? = null,
+    /** The site's page for this file: where the in-app browser opens when the link needs a browser. */
+    val pageUrl: String? = null,
 ) {
     val active: Boolean get() = status == JobStatus.QUEUED || status == JobStatus.DOWNLOADING || status == JobStatus.EXTRACTING
     val partName: String get() = Html.safeFilename(filename.ifEmpty { "$title.zip" }) + ".part"
@@ -94,6 +96,9 @@ class DownloadManager(
     private val _state = MutableStateFlow<List<DownloadJob>>(emptyList())
     /** Every job, newest first. */
     val state: StateFlow<List<DownloadJob>> = _state.asStateFlow()
+
+    /** Picks the folder for each file unpacked from a job's archive (add-ons into their folders). */
+    var router: ((DownloadJob, FolderNode, String) -> FolderNode)? = null
 
     /** Called with each job that finished. */
     var onDone: ((DownloadJob) -> Unit)? = null
@@ -168,12 +173,13 @@ class DownloadManager(
         title: String, system: String, source: String, filename: String, url: String,
         destination: String, headers: Map<String, String> = emptyMap(), extract: Boolean = false,
         keepArchive: Boolean = true, prepareSeconds: Double = 0.0, cover: String? = null, folderLabel: String? = null,
+        pageUrl: String? = null,
     ): DownloadJob {
         val id = "dl-${System.currentTimeMillis() / 1000}-${counter.incrementAndGet()}"
         val job = DownloadJob(
             id = id, title = title, system = system, source = source, filename = filename, url = url,
             destination = destination, headers = headers, extract = extract, keepArchive = keepArchive,
-            prepareSeconds = prepareSeconds, cover = cover, folderLabel = folderLabel,
+            prepareSeconds = prepareSeconds, cover = cover, folderLabel = folderLabel, pageUrl = pageUrl,
         )
         jobs[id] = job
         cancels[id] = AtomicBoolean(false)
@@ -317,13 +323,17 @@ class DownloadManager(
                     update(id, true) { it.copy(status = JobStatus.EXTRACTING, received = 0) }
                     try {
                         val produced = runInterruptible(Dispatchers.IO) {
-                            Unpack.unpack(finalNode, folder, scratch, { cancel.get() }) { written ->
-                                val now = System.nanoTime()
-                                if (now - lastPublish > 400_000_000L) {
-                                    lastPublish = now
-                                    update(id) { j -> j.copy(received = written) }
-                                }
-                            }
+                            Unpack.unpack(
+                                finalNode, folder, scratch, { cancel.get() },
+                                onProgress = { written ->
+                                    val now = System.nanoTime()
+                                    if (now - lastPublish > 400_000_000L) {
+                                        lastPublish = now
+                                        update(id) { j -> j.copy(received = written) }
+                                    }
+                                },
+                                route = { name -> router?.invoke(current, folder, name) ?: folder },
+                            )
                         }
                         val main = Unpack.mainFile(produced)
                         update(id, true) { it.copy(extractedTo = main?.name) }

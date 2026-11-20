@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -104,6 +105,11 @@ private fun JobRow(vm: AppViewModel, job: DownloadJob) {
         when {
             job.active -> IconBtn(Icons.Rounded.Close, "Cancel", { vm.cancelDownload(job.id) })
             job.status == JobStatus.ERROR || job.status == JobStatus.CANCELLED -> Row {
+                if (job.status == JobStatus.ERROR && (job.pageUrl != null || job.error?.contains("browser check") == true)) {
+                    // The link wanted a browser (a check, a file host's page): get it through the site's page.
+                    Btn("Open site", { vm.openBrowser(job) }, kind = ButtonKind.Primary, icon = Icons.Rounded.Language)
+                    Spacer(Modifier.width(8.dp))
+                }
                 IconBtn(Icons.Rounded.Refresh, "Try again", { vm.retryDownload(job.id) })
                 Spacer(Modifier.width(8.dp))
                 IconBtn(Icons.Rounded.Close, "Remove", { vm.removeDownload(job.id) })

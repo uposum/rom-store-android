@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material3.CircularProgressIndicator
@@ -88,7 +89,7 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
     var lightbox by remember(rom.id) { mutableStateOf<Int?>(null) }
     var showAll by remember(rom.id) { mutableStateOf(false) }
     val downloadFocus = remember { FocusRequester() }
-    val primary = page.options.firstOrNull()
+    val primary = page.main.firstOrNull() ?: page.options.firstOrNull()
     val pickFolder = rememberFolderPicker { vm.setConsoleFolder(rom.system, it) }
 
     BackHandler(enabled = lightbox == null) { vm.closeGame() }
@@ -131,7 +132,8 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
                     }
                     Text(Systems.name(rom.system).uppercase(), color = C.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
                     Spacer(Modifier.height(6.dp))
-                    Text(rom.title, style = T.h1, modifier = Modifier.padding(end = 120.dp))
+                    // The game's name; what the post bundles is on the file's label below.
+                    Text(io.github.uposum.romstore.core.model.Content.baseTitle(rom.title), style = T.h1, modifier = Modifier.padding(end = 120.dp))
                     Spacer(Modifier.height(14.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         rom.rating?.let { Pill(String.format("%.1f", it), color = C.star, icon = Icons.Rounded.Star) }
@@ -157,8 +159,12 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
                         Spacer(Modifier.width(16.dp))
                         Column(Modifier.weight(1f)) {
                             if (primary != null) {
-                                Text(primary.file.filename.ifEmpty { primary.file.label ?: rom.title }, style = T.h3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    primary.content.label?.let { ContentChip(primary.content) ; Spacer(Modifier.width(8.dp)) }
+                                    Text(primary.file.filename.ifEmpty { primary.file.label ?: rom.title }, style = T.h3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                                 Text(optionFacts(primary), style = T.small, maxLines = 1)
+                                primary.otherGame?.let { OtherGameWarning(it) }
                             } else if (page.loading) {
                                 Text("Looking up the download…", style = T.body2)
                             } else if (page.error != null) {
@@ -166,10 +172,16 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
                             }
                         }
                     }
-                    job?.takeIf { it.status == JobStatus.ERROR }?.error?.let {
+                    job?.takeIf { it.status == JobStatus.ERROR }?.let { failed ->
                         Spacer(Modifier.height(10.dp))
-                        Text(it, style = T.body2, color = C.bad)
+                        Text(failed.error ?: "The download failed", style = T.body2, color = C.bad)
+                        if (failed.pageUrl != null || failed.error?.contains("browser check") == true) {
+                            Spacer(Modifier.height(8.dp))
+                            Btn("Get it through the site's page", { vm.openBrowser(failed) }, kind = ButtonKind.Secondary, icon = Icons.Rounded.Download)
+                        }
                     }
+                    // Updates and DLC
+                    AddonsSection(page, onDownload = vm::download, onDownloadAll = vm::downloadAll, onBrowser = vm::openBrowser)
                     // Media
                     val media = rom.media
                     if (media != null && (media.shots.isNotEmpty() || media.trailer != null)) {
@@ -199,18 +211,19 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
                         Spacer(Modifier.height(24.dp))
                         Facts(page)
                     }
-                    // Other versions: five, then "Show all"
-                    if (page.options.size > 1) {
+                    // Other versions of the game: five, then "Show all"
+                    val versions = page.main
+                    if (versions.isNotEmpty()) {
                         Spacer(Modifier.height(28.dp))
-                        Text("Versions", style = T.h2)
+                        Text(if (versions.size > 1) "Versions" else "File", style = T.h2)
                         Spacer(Modifier.height(10.dp))
-                        val list = if (showAll) page.options else page.options.take(5)
+                        val list = if (showAll) versions else versions.take(5)
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            list.forEach { option -> VersionRow(option) { vm.download(option) } }
+                            list.forEach { option -> VersionRow(option, onBrowser = { vm.openBrowser(option) }) { vm.download(option) } }
                         }
-                        if (page.options.size > 5 && !showAll) {
+                        if (versions.size > 5 && !showAll) {
                             Spacer(Modifier.height(10.dp))
-                            Btn("Show all ${page.options.size}", { showAll = true }, kind = ButtonKind.Ghost)
+                            Btn("Show all ${versions.size}", { showAll = true }, kind = ButtonKind.Ghost)
                         }
                     }
                     // Save to: always at the very bottom
@@ -328,17 +341,89 @@ private fun Facts(page: GamePage) {
 }
 
 @Composable
-private fun VersionRow(option: DownloadOption, onClick: () -> Unit) {
+private fun VersionRow(option: DownloadOption, onBrowser: (() -> Unit)? = null, onClick: () -> Unit) {
     val shape = RoundedCornerShape(12.dp)
+    Row(verticalAlignment = Alignment.CenterVertically) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).pressable(shape = shape, onClick = onClick).background(C.surface, shape).padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.weight(1f).heightIn(min = 52.dp).pressable(shape = shape, onClick = onClick).background(C.surface, shape).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(option.file.filename.ifEmpty { option.file.label ?: option.entry.title }, style = T.h3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (option.content.label != null) { ContentChip(option.content); Spacer(Modifier.width(8.dp)) }
+                Text(option.file.filename.ifEmpty { option.file.label ?: option.entry.title }, style = T.h3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             Text(optionFacts(option), style = T.small, maxLines = 1)
+            option.otherGame?.let { OtherGameWarning(it) }
         }
         Icon(Icons.Rounded.Download, "Download", tint = C.text2, modifier = Modifier.size(20.dp))
+    }
+    if (onBrowser != null) {
+        // Through the site's own page, for links that need a browser.
+        Spacer(Modifier.width(8.dp))
+        IconBtn(Icons.Rounded.Public, "Get it through the site's page", onBrowser, size = 44.dp)
+    }
+    }
+}
+
+/** "UPDATE 1.6.0", "DLC", "GAME + UPDATE + DLC": what a file holds. */
+@Composable
+private fun ContentChip(content: io.github.uposum.romstore.core.model.ContentInfo) {
+    val color = when (content.kind) {
+        io.github.uposum.romstore.core.model.ContentKind.UPDATE -> C.accent
+        io.github.uposum.romstore.core.model.ContentKind.DLC -> Color(0xFFA877FF)
+        io.github.uposum.romstore.core.model.ContentKind.BUNDLE -> C.good
+        io.github.uposum.romstore.core.model.ContentKind.BASE -> C.text2
+    }
+    Text(
+        (content.label ?: "Game").uppercase(),
+        color = color, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp, maxLines = 1,
+        modifier = Modifier.background(color.copy(alpha = 0.15f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+    )
+}
+
+/** The file's Switch title ID belongs to another game: the site mislabelled its post. */
+@Composable
+private fun OtherGameWarning(name: String) {
+    Text("This file looks like $name", color = C.warn, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
+/** Updates and DLC: the game's own add-on files and posts found on the sources. */
+@Composable
+private fun AddonsSection(page: GamePage, onDownload: (DownloadOption) -> Unit, onDownloadAll: () -> Unit, onBrowser: (DownloadOption) -> Unit) {
+    val addons = page.allAddons
+    val bundled = page.main.firstOrNull()?.content?.takeIf { it.includesUpdate || it.includesDlc }
+    if (addons.isEmpty() && !page.addonsLoading && bundled == null) return
+    Spacer(Modifier.height(24.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Updates & DLC", style = T.h2)
+        Spacer(Modifier.width(10.dp))
+        if (page.addonsLoading) {
+            CircularProgressIndicator(color = C.text2, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Looking on your sources…", style = T.small)
+        }
+        Spacer(Modifier.weight(1f))
+        if (addons.isNotEmpty()) Btn("Download all", onDownloadAll, kind = ButtonKind.Ghost, icon = Icons.Rounded.Download)
+    }
+    Spacer(Modifier.height(8.dp))
+    if (bundled != null) {
+        Text("The download above already includes " + listOfNotNull(
+            if (bundled.includesUpdate) "an update" + (bundled.version?.let { " ($it)" } ?: "") else null,
+            if (bundled.includesDlc) "DLC" else null,
+        ).joinToString(" and ") + ".", style = T.body2)
+        Spacer(Modifier.height(8.dp))
+    }
+    if (addons.isEmpty() && !page.addonsLoading) {
+        Text("Your sources have no separate updates or DLC for this game.", style = T.body2)
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        addons.forEach { option -> VersionRow(option, onBrowser = { onBrowser(option) }) { onDownload(option) } }
+    }
+    if (addons.isNotEmpty()) {
+        Spacer(Modifier.height(6.dp))
+        Text("Saved in the console folder's updates/ and dlc/ folders. Install them from your emulator's menu.", style = T.small)
     }
 }
 

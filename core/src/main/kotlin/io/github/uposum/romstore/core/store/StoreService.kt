@@ -1,6 +1,8 @@
 package io.github.uposum.romstore.core.store
 
 import io.github.uposum.romstore.core.model.Dedupe
+import io.github.uposum.romstore.core.model.ContentKind
+import io.github.uposum.romstore.core.model.Content
 import io.github.uposum.romstore.core.model.GameMedia
 import io.github.uposum.romstore.core.model.LibraryGame
 import io.github.uposum.romstore.core.model.MergedRom
@@ -50,6 +52,8 @@ interface Artwork {
     fun alternatives(url: String): List<String> = emptyList()
     /** Start background work (title lists). */
     fun prefetch() {}
+    /** The game a Switch title ID belongs to, from the shipped title list. */
+    fun titleName(titleId: String): String? = null
 }
 
 @Serializable
@@ -81,11 +85,21 @@ data class SearchResult(
 )
 
 /** One file a game can be downloaded as, with what the store knows about it. */
-data class DownloadOption(val entry: RomEntry, val file: RomFile, val eta: Double?, val sourceLabel: String)
+data class DownloadOption(
+    val entry: RomEntry,
+    val file: RomFile,
+    val eta: Double?,
+    val sourceLabel: String,
+    /** Base game, update, DLC or a bundle of them. */
+    val content: io.github.uposum.romstore.core.model.ContentInfo = io.github.uposum.romstore.core.model.Content.classify(file.filename, entry.title),
+    /** Set when the file's Switch title ID belongs to another game: that game's name. */
+    val otherGame: String? = null,
+)
 
 sealed class StartResult {
     data class Started(val job: DownloadJob) : StartResult()
-    data class Failed(val error: String) : StartResult()
+    /** `pageUrl`: the site's page, when getting the file through the in-app browser may work. */
+    data class Failed(val error: String, val pageUrl: String? = null) : StartResult()
 }
 
 /**
@@ -116,6 +130,19 @@ class StoreService(
         http, library, File(dataDir, "downloads.json"), File(cacheDir, "unpack"), settings.value.maxConcurrent, scope,
     ).also { manager ->
         manager.onMeasure = { job, size, seconds -> speeds.record(job.source, size, seconds, job.prepareSeconds) }
+        // Files unpacked from a bundle: updates and DLC into their folders.
+        manager.router = { job, folder, name -> addonFolderFor(job.system, folder, Content.classify(name).kind) ?: folder }
+    }
+
+    /** updates/ or dlc/ inside a console folder for an add-on (when that setting is on), else null. */
+    private fun addonFolderFor(system: String, folder: FolderNode, kind: ContentKind): FolderNode? {
+        if (!settings.value.addonFolders || system !in Content.ADDON_SYSTEMS) return null
+        val name = when (kind) {
+            ContentKind.UPDATE -> Content.UPDATES_FOLDER
+            ContentKind.DLC -> Content.DLC_FOLDER
+            else -> return null
+        }
+        return runCatching { folder.createFolder(name) }.getOrNull()
     }
 
     private val healthFile = File(dataDir, "source_health.json")
@@ -470,14 +497,19 @@ class StoreService(
         val options = mutableListOf<Triple<DownloadOption, Int, Int>>()
         rom.entries.forEachIndexed { ei, entry ->
             entry.files.forEachIndexed { fi, file ->
+                // Sites list a console's BIOS next to its games (RomsFun's "BIOS: neogeo");
+                // the store never offers BIOS files.
+                if (isBiosFile(file)) return@forEachIndexed
                 val stat = stats[entry.source] ?: median?.let { SourceSpeed(speed = it) }
                 val eta = SpeedStats.estimate(stat, file.size ?: entry.size ?: medianSize)
                 options += Triple(DownloadOption(entry, file, eta, SourceDefs.label(entry.source)), ei, fi)
             }
         }
         val testFailed = stats.filterValues { it.testError != null }.keys
-        return options.sortedWith(
+        return options.map { (option, ei, fi) -> Triple(withOtherGame(rom, option), ei, fi) }.sortedWith(
             compareBy<Triple<DownloadOption, Int, Int>>(
+                // The game first; updates and DLC after it.
+                { if (it.first.content.isAddon) 1 else 0 },
                 { if (region.isNotEmpty()) (if (Regions.matches(it.first.file.region ?: it.first.entry.region ?: it.first.entry.title, region)) 0 else 1) else 0 },
                 { if (it.first.entry.source in testFailed) 1 else 0 },
                 { it.first.eta ?: Double.MAX_VALUE },
@@ -487,14 +519,81 @@ class StoreService(
         ).map { it.first }
     }
 
+    private fun isBiosFile(file: RomFile): Boolean {
+        val label = file.label ?: ""
+        return label.startsWith("BIOS", ignoreCase = true) || label.contains("· BIOS") ||
+            Dedupe.isFirmware(file.filename) || Dedupe.isFirmware(label)
+    }
+
+    /** A file whose Switch title ID names a different game gets that game's name (sites mislabel posts). */
+    private fun withOtherGame(rom: MergedRom, option: DownloadOption): DownloadOption {
+        val tid = option.content.titleId ?: return option
+        val base = Content.baseTitleId(tid) ?: return option
+        val name = runCatching { artwork.titleName(base) }.getOrNull() ?: return option
+        val ours = normalizeTitle(Content.baseTitle(rom.title)).split(" ").filter { it.length > 2 }.toSet()
+        val theirs = normalizeTitle(name).split(" ").filter { it.length > 2 }.toSet()
+        return if (ours.isNotEmpty() && theirs.isNotEmpty() && ours.intersect(theirs).isEmpty()) option.copy(otherGame = name) else option
+    }
+
+    // ------------------------------------------------------------ add-ons
+
+    private val addonCache = ConcurrentHashMap<String, Pair<Long, List<DownloadOption>>>()
+
+    /**
+     * Updates and DLC for a game that the sources publish as posts of their
+     * own: each source is asked for "<game> update" and "<game> dlc", and
+     * posts about the same game that are add-ons (or bundles) are resolved.
+     * Only for consoles whose games get add-ons; kept for the session.
+     */
+    suspend fun findAddons(rom: MergedRom): List<DownloadOption> = withContext(Dispatchers.IO) {
+        if (rom.system !in Content.ADDON_SYSTEMS) return@withContext emptyList()
+        val base = Content.baseTitle(rom.title)
+        val key = "${rom.system}|${Content.baseKey(rom.title)}"
+        addonCache[key]?.let { if (System.currentTimeMillis() - it.first < ttlMs) return@withContext it.second }
+        val known = rom.entries.map { it.key }.toSet()
+        val sources = buildSources().filter { restingUntil(it.id) == null }
+        val found = withTimeoutOrNull(25_000) {
+            coroutineScope {
+                sources.flatMap { source ->
+                    listOf("$base update", "$base dlc").map { query ->
+                        async { runCatching { source.search(query, 20) }.getOrDefault(emptyList()).map { source to it } }
+                    }
+                }.awaitAll().flatten()
+            }
+        } ?: emptyList()
+        val wanted = found
+            .filter { (_, e) -> e.system == rom.system && e.key !in known && Content.baseKey(e.title) == Content.baseKey(rom.title) }
+            .distinctBy { it.second.key }
+            .take(8)
+        val options = withTimeoutOrNull(25_000) {
+            coroutineScope {
+                wanted.map { (source, entry) ->
+                    async {
+                        val files = runCatching { entry.files.ifEmpty { source.resolve(entry) } }.getOrDefault(emptyList())
+                        entry.files = files
+                        files.map { DownloadOption(entry, it, null, SourceDefs.label(entry.source)) }
+                    }
+                }.awaitAll().flatten()
+            }
+        } ?: emptyList()
+        val addons = options.filter { (it.content.isAddon || it.content.kind == ContentKind.BUNDLE) && !isBiosFile(it.file) }
+            .map { withOtherGame(rom, it) }
+            .sortedWith(compareBy({ it.content.kind.ordinal }, { it.file.filename }))
+        addonCache[key] = System.currentTimeMillis() to addons
+        addons
+    }
+
     // --------------------------------------------------------------- download
 
     /** Start downloading one file of a game into its console's folder. */
     suspend fun startDownload(rom: MergedRom, entry: RomEntry, file: RomFile, system: String? = null): StartResult = withContext(Dispatchers.IO) {
         val lib = library() ?: return@withContext StartResult.Failed("Choose a ROM folder in Settings first.")
         val target = system ?: entry.system
-        val folder = runCatching { lib.consoleFolder(target, create = true) }.getOrNull()
+        val consoleFolder = runCatching { lib.consoleFolder(target, create = true) }.getOrNull()
             ?: return@withContext StartResult.Failed("Cannot open the ${Systems.label(target)} folder. Check the ROM folder in Settings.")
+        val content = Content.classify(file.filename, entry.title)
+        // Updates and DLC go into updates/ and dlc/, so frontends do not list them as games.
+        val folder = addonFolderFor(target, consoleFolder, content.kind) ?: consoleFolder
         val source = buildSources().firstOrNull { it.id == entry.source }
         val preparing = System.nanoTime()
         var url = file.url
@@ -505,32 +604,64 @@ class StoreService(
                     break
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
-                    if (e is HttpError && e.message?.contains("Cloudflare") == true) return@withContext StartResult.Failed(e.message!!)
+                    if (e is HttpError && e.message?.contains("Cloudflare") == true) {
+                        return@withContext StartResult.Failed(e.message!!, file.url.takeIf { it.startsWith("http") } ?: file.sourceUrl ?: entry.url)
+                    }
                     url = file.url
                     if (attempt < 2) delay(700L * (attempt + 1))
                 }
             }
         }
-        val size = file.size ?: entry.size ?: 0L
-        val s = settings.value
         val filename = file.filename.ifEmpty { Html.filenameFromUrl(url).ifEmpty { "${entry.title}.zip" } }
+        // The page to open in the browser if the link turns out to need one: the
+        // site's download page when the source resolved one, else the game's page.
+        val page = file.url.takeIf { it != url && it.startsWith("http") } ?: file.sourceUrl ?: entry.url
+        return@withContext enqueueInto(
+            folder, consoleFolder, target, entry.title, entry.source, filename, url, emptyMap(),
+            file.size ?: entry.size ?: 0L, rom.cover ?: entry.cover, page, (System.nanoTime() - preparing) / 1e9,
+        )
+    }
+
+    /**
+     * A download the in-app browser started (the user went through the site's
+     * page): saved like any other, into the console's folder, with the
+     * browser's cookies and user agent so the file server sees the same visitor.
+     */
+    suspend fun startBrowserDownload(
+        title: String, system: String, source: String, cover: String?, pageUrl: String?,
+        url: String, filename: String, size: Long, headers: Map<String, String>,
+    ): StartResult = withContext(Dispatchers.IO) {
+        val lib = library() ?: return@withContext StartResult.Failed("Choose a ROM folder in Settings first.")
+        val consoleFolder = runCatching { lib.consoleFolder(system, create = true) }.getOrNull()
+            ?: return@withContext StartResult.Failed("Cannot open the ${Systems.label(system)} folder. Check the ROM folder in Settings.")
+        val content = Content.classify(filename, title)
+        val folder = addonFolderFor(system, consoleFolder, content.kind) ?: consoleFolder
+        enqueueInto(folder, consoleFolder, system, title, source, filename, url, headers, size, cover, pageUrl, 0.0)
+    }
+
+    private fun enqueueInto(
+        folder: FolderNode, consoleFolder: FolderNode, target: String, title: String, sourceId: String,
+        filename: String, url: String, headers: Map<String, String>, size: Long, cover: String?, page: String?, prepare: Double,
+    ): StartResult {
+        val s = settings.value
         val needed = s.autoUnpackDiscs && Unpack.needsUnpack(target, filename)
         val extract = s.extractArchives || needed
         if (size > 0) {
             val need = size * (if (extract) 2 else 1)
             val free = folder.freeSpace()
             if (free != null && free > 0 && need > free) {
-                return@withContext StartResult.Failed("Not enough free space: needs ${io.github.uposum.romstore.core.net.humanSize(need)}, ${io.github.uposum.romstore.core.net.humanSize(free)} free.")
+                return StartResult.Failed("Not enough free space: needs ${io.github.uposum.romstore.core.net.humanSize(need)}, ${io.github.uposum.romstore.core.net.humanSize(free)} free.")
             }
         }
         val keep = if (s.extractArchives) s.keepArchive else false
         val job = downloads.enqueue(
-            title = entry.title, system = target, source = entry.source, filename = filename, url = url,
-            destination = folder.id, extract = extract, keepArchive = keep,
-            prepareSeconds = (System.nanoTime() - preparing) / 1e9, cover = rom.cover ?: entry.cover,
-            folderLabel = Systems.label(target),
+            title = title, system = target, source = sourceId, filename = filename, url = url,
+            destination = folder.id, headers = headers, extract = extract, keepArchive = keep,
+            prepareSeconds = prepare, cover = cover,
+            folderLabel = Systems.label(target) + if (folder !== consoleFolder) " · ${folder.name}" else "",
+            pageUrl = page,
         )
-        StartResult.Started(job)
+        return StartResult.Started(job)
     }
 
     // ---------------------------------------------------------------- library

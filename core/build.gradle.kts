@@ -28,6 +28,8 @@ tasks.test {
 tasks.test {
     systemProperty("live", System.getProperty("live") ?: "")
     systemProperty("q", System.getProperty("q") ?: "")
+    systemProperty("src", System.getProperty("src") ?: "switchroms")
+    systemProperty("resolve", System.getProperty("resolve") ?: "")
     maxHeapSize = System.getProperty("testHeap") ?: "1g"
     testLogging { showStandardStreams = System.getProperty("live") == "1" }
 }

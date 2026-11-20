@@ -33,7 +33,8 @@ If a request would cross one of these, say which and do the rest.
 ```
 core/   Kotlin/JVM, unit-tested on the desktop JVM
   model/    Models (RomEntry, MergedRom, ...), Systems (console keys, folder
-            names, box ratios), Dedupe (merge + sort)
+            names, box ratios), Dedupe (merge + sort), Content (base game /
+            update / DLC / bundle from file and post names, Switch title IDs)
   net/      HttpClient (OkHttp: throttle, cookies, retries, download with
             resume, sample), Html (regex helpers ported from htmlutil.py),
             RegexFlags (UNI, findAllFast/replaceFast — see §6)
@@ -113,3 +114,13 @@ the application id: installed copies could not update.
   folder, renamed when complete, never overwriting; hopeless errors
   (`HttpError.retry == false`: a web page, a browser check, 4xx) are not retried.
 - **Placeholder covers are no covers** (`dropPlaceholderCovers`).
+- **Updates and DLC** (`Content`, consoles in `Content.ADDON_SYSTEMS`): the
+  sources mostly publish base games; some files include an update, some
+  posts bundle update + DLC, a few are add-ons of their own. Merging groups
+  add-on posts under their game (`Content.baseKey`), the game page looks for
+  "<game> update"/"<game> dlc" posts in the background (`findAddons`), add-on
+  downloads and add-ons unpacked from bundles go to `<console>/updates` and
+  `<console>/dlc` (setting `addonFolders`), and the library attaches them to
+  their game by Switch title ID (base = ID & ~0x1FFF; update +0x800, DLC
+  +0x1000+n) or name. A file whose title ID names another game is flagged
+  (`DownloadOption.otherGame`): sites mislabel posts.

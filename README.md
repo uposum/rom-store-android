@@ -29,6 +29,8 @@
 - **Your folders.** Pick a ROM folder once; each console's games go into its own subfolder (`gba`, `snes`, `psx`, …) — the layout ES-DE, Daijishō and most emulators expect. Any console can have a folder of its own instead (an SD card, an existing collection).
 - **Downloads that survive.** Run in the background with a notification, continue where they stopped after a restart, and are never saved when a link turns out to be a web page.
 - **Unpacking where it is needed.** Disc games for emulators that cannot read a `.zip` or `.7z` (PlayStation, GameCube, Wii, PS2, Switch, …) are unpacked after the download. ZIP, 7z and RAR.
+- **Updates and DLC.** For Switch and other consoles with add-ons, the game page lists the updates and DLC the sources publish, with *Download all*. They go into the console's `updates` and `dlc` folders, and the library shows them under their game.
+- **Sites that need a browser.** When a link asks for a browser check or a download page, *Open site* shows the site's page in the app, and *Open in browser* hands it to your browser.
 - **Library.** Everything in your console folders with covers and real names: open a game in your emulator, unpack it, look it up in the store, or delete it.
 - **Shelves.** Recently viewed, favourites and your library on the home screen, then every console your sources can browse.
 - **Made for handhelds.** Landscape first, full screen, every control reachable with the d-pad, one white focus ring, and the buttons do what they say at the bottom of the screen.

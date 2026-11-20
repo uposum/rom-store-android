@@ -58,7 +58,17 @@ data class GamePage(
     val loading: Boolean = true,
     val options: List<DownloadOption> = emptyList(),
     val error: String? = null,
-)
+    /** Updates and DLC the sources publish as posts of their own. */
+    val addons: List<DownloadOption> = emptyList(),
+    val addonsLoading: Boolean = false,
+) {
+    /** The game itself (or a bundle with it): what the Download button offers. */
+    val main: List<DownloadOption> get() = options.filterNot { it.content.isAddon }
+
+    /** Every update and DLC: the game's own add-on files and those found separately. */
+    val allAddons: List<DownloadOption>
+        get() = (options.filter { it.content.isAddon } + addons).distinctBy { it.entry.key + "|" + it.file.id }
+}
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val appRef = app as RomStoreApp
@@ -102,6 +112,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Ask the shell to put the cursor in the search field. */
     val focusSearch = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** The in-app browser, when a link needs one. */
+    private val _browser = MutableStateFlow<BrowserRequest?>(null)
+    val browser = _browser.asStateFlow()
 
     /** One-line messages for the snackbar. */
     val messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
@@ -240,13 +254,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 detailed.fold(
                     onSuccess = { d ->
                         val options = store.downloadOptions(d)
-                        now.copy(rom = d, loading = false, options = options, error = if (options.isEmpty()) d.entries.firstNotNullOfOrNull { it.error } ?: "No download link found" else null)
+                        val lookForAddons = d.system in io.github.uposum.romstore.core.model.Content.ADDON_SYSTEMS
+                        now.copy(
+                            rom = d, loading = false, options = options, addonsLoading = lookForAddons,
+                            error = if (options.isEmpty()) d.entries.firstNotNullOfOrNull { it.error } ?: "No download link found" else null,
+                        )
                     },
                     onFailure = { e -> now.copy(loading = false, error = e.message ?: "Could not load the game") },
                 )
             }
+            val loaded = _game.value
+            if (loaded != null && loaded.rom.id == rom.id && loaded.addonsLoading) loadAddons(loaded.rom)
         }
     }
+
+    /** Updates and DLC published as their own posts, looked up after the page has opened. */
+    private fun loadAddons(rom: MergedRom) {
+        viewModelScope.launch {
+            val found = runCatching { store.findAddons(rom) }.getOrDefault(emptyList())
+            _game.update { now -> if (now?.rom?.id == rom.id) now.copy(addons = found, addonsLoading = false) else now }
+        }
+    }
+
+    /** The game (when not in the library yet), its newest update and every DLC. */
+    fun downloadAll() {
+        val page = _game.value ?: return
+        val picks = mutableListOf<DownloadOption>()
+        if (!page.rom.installed) page.main.firstOrNull()?.let { picks += it }
+        val addons = page.allAddons.filter { it.otherGame == null }
+        addons.filter { it.content.kind == io.github.uposum.romstore.core.model.ContentKind.UPDATE }
+            .maxWithOrNull(compareBy { versionKey(it.content.version) })?.let { picks += it }
+        picks += addons.filter { it.content.kind == io.github.uposum.romstore.core.model.ContentKind.DLC }
+        if (picks.isEmpty()) { messages.tryEmit("Nothing to download"); return }
+        picks.forEach { download(it) }
+    }
+
+    private fun versionKey(version: String?): String =
+        (version ?: "").removePrefix("#").split('.').joinToString(".") { part -> part.filter(Char::isDigit).padStart(5, '0') }
 
     fun stepGame(delta: Int) {
         val page = _game.value ?: return
@@ -287,8 +331,65 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     _jobsByGame.update { it + (gameKey(page.rom) to r.job.id) }
                     messages.tryEmit("Downloading ${r.job.title}")
                 }
+                is StartResult.Failed -> {
+                    val pageUrl = r.pageUrl
+                    if (pageUrl != null) {
+                        // The site wants a browser: open its page here, the download is taken over from it.
+                        messages.tryEmit("${option.sourceLabel} needs its page opened: finish it there, the download starts here.")
+                        _browser.value = BrowserRequest(option.entry.title, option.entry.system, option.entry.source, page.rom.cover ?: option.entry.cover, pageUrl)
+                    } else {
+                        messages.tryEmit(r.error)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Get a failed download through the site's page in the in-app browser. */
+    fun openBrowser(job: io.github.uposum.romstore.core.store.DownloadJob) {
+        // A check on the file server itself: open the file link, so the check is all
+        // there is to go through. Anything else: the site's page for the file.
+        val fileServerCheck = job.error?.contains("browser check", ignoreCase = true) == true
+        val page = (if (fileServerCheck) job.url else null) ?: job.pageUrl ?: return
+        _browser.value = BrowserRequest(job.title, job.system, job.source, job.cover, page, replacesJob = job.id)
+    }
+
+    /** Get one file through the site's page: its download page on the site, else the game's page. */
+    fun openBrowser(option: DownloadOption) {
+        val entryHost = runCatching { android.net.Uri.parse(option.entry.url).host }.getOrNull()
+        val fileHost = runCatching { android.net.Uri.parse(option.file.url).host }.getOrNull()
+        val page = if (fileHost != null && fileHost == entryHost) option.file.url else option.file.sourceUrl ?: option.entry.url
+        if (page.isBlank()) return
+        _browser.value = BrowserRequest(option.entry.title, option.entry.system, option.entry.source, _game.value?.rom?.cover ?: option.entry.cover, page)
+    }
+
+    fun closeBrowser() { _browser.value = null }
+
+    /** The browser started a download: save it like any other, with the browser's cookies. */
+    fun browserFile(request: BrowserRequest, file: BrowserFile) {
+        // The name in the link's path ("…/Game (USA).zip?e=…&s=…"), else what the browser guessed.
+        val fromPath = android.net.Uri.parse(file.url).lastPathSegment?.takeIf { isGameFile(file.url) }
+        val name = fromPath ?: android.webkit.URLUtil.guessFileName(file.url, file.contentDisposition, file.mimeType)
+        val headers = buildMap {
+            put("User-Agent", file.userAgent)
+            android.webkit.CookieManager.getInstance().getCookie(file.url)?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+            file.referer?.let { put("Referer", it) }
+        }
+        viewModelScope.launch {
+            val r = store.startBrowserDownload(
+                request.title, request.system, request.source, request.cover, request.pageUrl,
+                file.url, name, file.contentLength.coerceAtLeast(0), headers,
+            )
+            when (r) {
+                is StartResult.Started -> {
+                    request.replacesJob?.let { store.downloads.remove(it) }
+                    _game.value?.let { g -> _jobsByGame.update { it + (gameKey(g.rom) to r.job.id) } }
+                    messages.tryEmit("Downloading $name")
+                    appRef.startDownloadService()
+                }
                 is StartResult.Failed -> messages.tryEmit(r.error)
             }
+            _browser.value = null
         }
     }
 

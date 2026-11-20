@@ -38,6 +38,98 @@ class LiveSearchProbe {
     }
 
     @Test
+    fun switchFiles() = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val http = HttpClient()
+        val q = System.getProperty("q")?.ifEmpty { null } ?: "monster hunter rise"
+        for ((id, address) in listOf("romsfun" to "https://romsfun.com", "romspedia" to "https://www.romspedia.com", "switchroms" to "https://nintendo-switch-roms.com")) {
+            val source = SourceDefs.build(id, http, address)!!
+            val entries = runCatching { source.search(q, 10) }.getOrElse { println("$id search failed: ${it.message}"); continue }
+            val switch = entries.filter { it.system == "switch" }.take(2)
+            println("== $id: ${entries.size} results, switch: ${switch.map { it.title }}")
+            for (e in switch) {
+                val files = runCatching { source.resolve(e) }.getOrElse { println("   resolve failed ${it.message}"); emptyList() }
+                println("   ${e.title} -> ${files.size} files")
+                files.forEach { println("      label=${it.label} | name=${it.filename} | size=${it.size} | ${it.url.take(110)}") }
+            }
+        }
+    }
+
+    @Test
+    fun switchBrowseFiles() = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val http = HttpClient()
+        for ((id, address) in listOf("romspedia" to "https://www.romspedia.com", "romsfun" to "https://romsfun.com")) {
+            val source = SourceDefs.build(id, http, address)!!
+            val entries = runCatching { source.browse("switch", 40) }.getOrElse { println("$id browse failed: ${it.message}"); continue }
+            println("== $id switch catalogue: ${entries.size}")
+            for (e in entries.take(3)) {
+                val files = runCatching { source.resolve(e) }.getOrElse { println("   resolve failed ${it.message}"); emptyList() }
+                println("   ${e.title} -> ${files.size} files")
+                files.take(12).forEach { println("      label=${it.label} | name=${it.filename} | size=${it.size}") }
+            }
+        }
+    }
+
+    @Test
+    fun anySearch() = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val id = System.getProperty("src") ?: "switchroms"
+        val address = SourceDefs.get(id)!!.homepage
+        val source = SourceDefs.build(id, HttpClient(), address)!!
+        val entries = source.search(System.getProperty("q") ?: "update", 40)
+        entries.forEach { println("   ${it.system} | ${it.title} | ${it.url}") }
+        if (System.getProperty("resolve") == "1") entries.take(4).forEach { e ->
+            runCatching { source.resolve(e) }.getOrDefault(emptyList()).forEach { println("      ${e.title}: ${it.filename} | ${it.label}") }
+        }
+    }
+
+    @Test
+    fun romsfunDownload(): Unit = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val http = HttpClient()
+        val source = SourceDefs.build("romsfun", http, "https://romsfun.com")!!
+        val q = System.getProperty("q")?.ifEmpty { null } ?: "pokemon emerald"
+        val entries = source.search(q, 10)
+        println("search: ${entries.map { "${it.system}:${it.title}" }.take(5)}")
+        val entry = entries.first()
+        val files = source.resolve(entry)
+        println("files: ${files.size}")
+        files.take(3).forEach { println("   file label=${it.label} name=${it.filename} url=${it.url}") }
+        val file = files.firstOrNull() ?: return@runBlocking
+        val link = runCatching { source.resolveDownload(file) }
+        println("resolveDownload: " + link.fold({ it }, { "FAILED ${it.javaClass.simpleName}: ${it.message}" }))
+        link.getOrNull()?.let { url ->
+            val r = runCatching { http.sample(url, maxBytes = 200_000, maxSeconds = 3.0) }
+            println("sample: " + r.fold({ "ok ${it.bytes} bytes" }, { "FAILED ${it.message}" }))
+            val head = runCatching { http.request(url, maxBytes = 4096, retries = 0) }
+            println("GET: " + head.fold({ "${it.status} ${it.url} ${it.header("content-type")} | ${it.text.take(300).replace("\n", " ")}" }, { "FAILED ${it.message}" }))
+        }
+    }
+
+    @Test
+    fun romsfunBig(): Unit = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val http = HttpClient()
+        val source = SourceDefs.build("romsfun", http, "https://romsfun.com")!!
+        val q = System.getProperty("q")?.ifEmpty { null } ?: "gran turismo 4"
+        val entry = source.search(q, 10).first()
+        val files = source.resolve(entry)
+        println("${entry.system} ${entry.title}: ${files.size} files")
+        val picks = files.sortedByDescending { it.size ?: 0 }.take(2) + files.filter { (it.label ?: "").contains("USA") }.take(1)
+        for (file in picks.distinct()) {
+            val link = runCatching { source.resolveDownload(file) }
+            val host = link.getOrNull()?.let { java.net.URI(it.replace(" ", "%20")).host }
+            println("  ${file.label} size=${file.size}")
+            println("    -> " + link.fold({ "host=$host ${it.take(90)}" }, { "FAILED ${it.message}" }))
+            link.getOrNull()?.let { url ->
+                val r = runCatching { http.sample(url, maxBytes = 300_000, maxSeconds = 4.0) }
+                println("    sample: " + r.fold({ "ok ${it.bytes.toLong()} bytes" }, { "FAILED ${it.message}" }))
+            }
+        }
+    }
+
+    @Test
     fun pageTwo() = runBlocking {
         Assume.assumeTrue(System.getProperty("live") == "1")
         val http = HttpClient()

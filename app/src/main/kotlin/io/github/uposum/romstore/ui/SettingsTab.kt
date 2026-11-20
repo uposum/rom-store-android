@@ -268,6 +268,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.downloadsPane(vm: App
         }
         Spacer(Modifier.height(10.dp))
         Card {
+            ToggleRow("Updates and DLC in their own folders", "Saved to updates/ and dlc/ inside the console folder, so game lists do not show them as games. Emulators install them from there.", s.addonFolders) { on -> vm.updateSettings { it.copy(addonFolders = on) } }
+            Divider()
             ToggleRow("Unpack disc games", "PlayStation, GameCube, Switch and other disc consoles' emulators cannot read a .zip or .7z: those are unpacked, and the archive deleted.", s.autoUnpackDiscs) { on -> vm.updateSettings { it.copy(autoUnpackDiscs = on) } }
             Divider()
             ToggleRow("Unpack every archive", "Also unpack cartridge games (most emulators read their .zip directly).", s.extractArchives) { on -> vm.updateSettings { it.copy(extractArchives = on) } }

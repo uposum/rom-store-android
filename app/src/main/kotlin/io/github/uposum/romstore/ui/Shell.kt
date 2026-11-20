@@ -156,6 +156,10 @@ fun Shell(vm: AppViewModel) {
         AnimatedVisibility(visible = libraryGame != null, enter = fadeIn(), exit = fadeOut()) {
             libraryGame?.let { LibraryGamePage(vm, it, gamepad) }
         }
+        val browser by vm.browser.collectAsStateWithLifecycle()
+        browser?.let { request ->
+            BrowserDownload(request, onFile = { vm.browserFile(request, it) }, onClose = vm::closeBrowser)
+        }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = if (gamepad) 44.dp else 20.dp)) { data ->
             Snackbar(
                 containerColor = C.surface2, contentColor = C.text, shape = RoundedCornerShape(12.dp),

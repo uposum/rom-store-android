@@ -57,6 +57,8 @@ class AppArtwork(
 
     override fun alternatives(url: String): List<String> = GameTdb.alternatives(url)
 
+    override fun titleName(titleId: String): String? = runCatching { switchTitles.name(titleId) }.getOrNull()
+
     override suspend fun applyBoxart(entries: List<RomEntry>) {
         if (!s.libretroBoxart) return
         runCatching { boxart.apply(entries, resize = s.boxartResize) }

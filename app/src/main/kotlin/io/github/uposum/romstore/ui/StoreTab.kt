@@ -265,7 +265,7 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
                 style = T.h1, fontSize = if (dense) 17.sp else 24.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
             )
             Spacer(Modifier.width(10.dp))
-            if (!r.loading) Text("${shown.size}${if (r.hasMore) "+" else ""} games", style = T.body2, fontSize = if (dense) 12.sp else 13.sp)
+            if (!r.loading) Text("${shown.size}${if (r.hasMore && shown.isNotEmpty()) "+" else ""} games", style = T.body2, fontSize = if (dense) 12.sp else 13.sp)
             if (!r.loading && r.errors.isNotEmpty() && shown.isNotEmpty()) {
                 // Games were found: a failing source is a note, not a row of its own.
                 Spacer(Modifier.width(10.dp))

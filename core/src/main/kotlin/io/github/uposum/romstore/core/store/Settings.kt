@@ -28,6 +28,8 @@ data class StoreSettings(
     /** Unpack disc images that their emulators cannot read from an archive. */
     val autoUnpackDiscs: Boolean = true,
     val maxConcurrent: Int = 2,
+    /** Updates and DLC go into updates/ and dlc/ inside the console folder, not next to the games. */
+    val addonFolders: Boolean = true,
     val resultsPerSource: Int = 30,
     val searchCacheHours: Double = 72.0,
     /** IGDB crops every cover to 3:4, so its art only fills in games without one unless this is on. */

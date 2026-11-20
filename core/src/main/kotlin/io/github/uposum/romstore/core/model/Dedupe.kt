@@ -14,7 +14,10 @@ object Dedupe {
 
     // matchTitle ignores spacing, accents and filler words, so "Pokemon Red",
     // "Pokémon - Red Version (USA)" and "Pokemon Red Version" are one game.
-    private fun groupKey(entry: RomEntry) = "${entry.system}::${matchTitle(entry.title)}"
+    // Add-on words are left out, so "Game Update 1.2" and "Game + DLC" join "Game".
+    private fun groupKey(entry: RomEntry) = "${entry.system}::${Content.baseKey(entry.title)}"
+
+    private fun isAddonPost(entry: RomEntry) = Content.classify("", entry.title).isAddon
 
     /**
      * Group entries by (system, normalised title) and order them by priority.
@@ -31,6 +34,7 @@ object Dedupe {
         }
         fun prio(source: String) = priority.indexOf(source).let { if (it < 0) priority.size else it }
         val rank = compareBy<RomEntry>(
+            { if (isAddonPost(it)) 1 else 0 },
             { prio(it.source) },
             { it.rank },
             { e -> -listOf<Any?>(e.cover, e.rating, e.downloads, e.year, e.size, e.summary).count(::truthy) },
