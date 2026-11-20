@@ -1,5 +1,6 @@
 package io.github.uposum.romstore.core.art
 
+import io.github.uposum.romstore.core.model.Content
 import io.github.uposum.romstore.core.model.matchTitle
 import io.github.uposum.romstore.core.net.readNBytesCompat
 import kotlinx.serialization.json.JsonPrimitive
@@ -138,7 +139,9 @@ fun switchTitleId(
         tid = lookup(if (dot > 0) base.substring(0, dot) else base)
     }
     if (tid.isNullOrEmpty() || tid.length < 3) return null
-    return (tid.dropLast(3) + "000").uppercase()
+    // The base game's ID: an update is base + 0x800, a DLC base + 0x1000 + n
+    // (…E000 + 0x1001 = …F001), so the low 13 bits go, not the last three digits.
+    return Content.baseTitleId(tid) ?: (tid.dropLast(3) + "000").uppercase()
 }
 
 /**

@@ -19,6 +19,7 @@ import io.github.uposum.romstore.core.store.StartResult
 import io.github.uposum.romstore.core.store.StoreSettings
 import io.github.uposum.romstore.storage.SafLibrary
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -138,7 +139,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val jobsByGame = _jobsByGame.asStateFlow()
 
     private var searchJob: Job? = null
+    private var moreJob: Job? = null
     private var gameJob: Job? = null
+    private var libraryJob: Job? = null
+
+    /** Bumped for every new result list / game page: late answers for an older one are dropped. */
+    private var resultsGen = 0
+    private var gameGen = 0
 
     init {
         refreshConsoles()
@@ -157,6 +164,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Tab.Settings -> refreshSources()
             else -> {}
         }
+    }
+
+    /** The Downloads tab, with nothing over it (the notification opens it). */
+    fun showDownloads() {
+        closeBrowser()
+        closeGame()
+        _libraryGame.value = null
+        setTab(Tab.Downloads)
     }
 
     fun stepTab(delta: Int) {
@@ -178,7 +193,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             region = previous?.region ?: "all", source = previous?.source ?: "all", sort = previous?.sort ?: "relevance",
         )
         _tab.value = Tab.Store
-        searchJob?.cancel()
+        newResults()
         searchJob = viewModelScope.launch {
             val sort = _results.value?.sort ?: "relevance"
             val result = runCatching { store.search(q, system = system, sort = sort) }
@@ -193,14 +208,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** A new result list (or none): what is still loading for the old one is stopped. */
+    private fun newResults() {
+        resultsGen++
+        searchJob?.cancel()
+        moreJob?.cancel()
+    }
+
     fun loadMore() {
         val current = _results.value ?: return
         if (current.browse || !current.hasMore || current.loadingMore || current.loading) return
         _results.value = current.copy(loadingMore = true)
-        viewModelScope.launch {
-            val r = runCatching { store.search(current.query, system = current.system, sort = current.sort, page = current.page + 1) }.getOrNull()
+        val gen = resultsGen
+        moreJob?.cancel()
+        moreJob = viewModelScope.launch {
+            val r = try {
+                store.search(current.query, system = current.system, sort = current.sort, page = current.page + 1)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                null
+            }
             _results.update { now ->
-                if (now == null || now.query != current.query) return@update now
+                if (now == null || gen != resultsGen) return@update now
                 if (r == null) now.copy(loadingMore = false, hasMore = false)
                 else {
                     val known = now.all.map { gameKey(it) }.toSet()
@@ -214,7 +244,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _query.value = ""
         _tab.value = Tab.Store
         _results.value = Results(system = system, browse = true, loading = true)
-        searchJob?.cancel()
+        newResults()
         searchJob = viewModelScope.launch {
             val r = runCatching { store.browse(system) }
             r.onSuccess { res -> _results.update { it?.copy(loading = false, all = res.results, errors = res.errors) } }
@@ -242,7 +272,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun goHome() {
-        searchJob?.cancel()
+        newResults()
         _results.value = null
         _query.value = ""
         refreshConsoles()
@@ -279,11 +309,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val rom = page.rom
         store.shelves.addRecent(rom.title, rom.system, rom.cover)
         gameJob?.cancel()
+        // Ids repeat (the same game opened again): a page is told apart by its generation.
+        val gen = ++gameGen
         if (rom.id.startsWith("stub:")) return
         gameJob = viewModelScope.launch {
             val detailed = runCatching { store.details(rom) }
+            // A closed or replaced page is not an error to show on the next one.
+            detailed.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
             _game.update { now ->
-                if (now == null || now.rom.id != rom.id) return@update now
+                if (now == null || gen != gameGen) return@update now
                 detailed.fold(
                     onSuccess = { d ->
                         val options = store.downloadOptions(d)
@@ -297,15 +331,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
             val loaded = _game.value
-            if (loaded != null && loaded.rom.id == rom.id && loaded.addonsLoading) loadAddons(loaded.rom)
+            if (loaded != null && gen == gameGen && loaded.addonsLoading) loadAddons(loaded.rom, gen)
+            // Sources whose link did not load (a slow or busy site): asked once more, and added when they answer.
+            val first = detailed.getOrNull() ?: return@launch
+            if (first.entries.none { it.files.isEmpty() && it.error != null }) return@launch
+            kotlinx.coroutines.delay(3_000)
+            val retried = runCatching { store.details(first) }
+            retried.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+            val again = retried.getOrNull() ?: return@launch
+            if (again.entries.count { it.files.isNotEmpty() } <= first.entries.count { it.files.isNotEmpty() }) return@launch
+            _game.update { now ->
+                if (now == null || gen != gameGen) return@update now
+                val options = store.downloadOptions(again)
+                now.copy(rom = again, options = options, error = if (options.isEmpty()) now.error else null)
+            }
         }
     }
 
     /** Updates and DLC published as their own posts, looked up after the page has opened. */
-    private fun loadAddons(rom: MergedRom) {
+    private fun loadAddons(rom: MergedRom, gen: Int) {
         viewModelScope.launch {
             val found = runCatching { store.findAddons(rom) }.getOrDefault(emptyList())
-            _game.update { now -> if (now?.rom?.id == rom.id) now.copy(addons = found, addonsLoading = false) else now }
+            _game.update { now -> if (now != null && gen == gameGen) now.copy(addons = found, addonsLoading = false) else now }
         }
     }
 
@@ -333,6 +380,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeGame() {
         gameJob?.cancel()
+        gameGen++
         _game.value = null
     }
 
@@ -342,16 +390,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _game.value = GamePage(stub)
         store.shelves.addRecent(item.title, item.system, item.cover)
         gameJob?.cancel()
+        val gen = ++gameGen
         gameJob = viewModelScope.launch {
-            val found = runCatching { store.search(item.title, system = item.system) }.getOrNull()
+            val search = runCatching { store.search(item.title, system = item.system) }
+            search.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+            val found = search.getOrNull()
             val key = matchTitle(item.title)
             val rom = found?.results?.firstOrNull { matchTitle(it.title) == key && it.system == item.system }
                 ?: found?.results?.firstOrNull { matchTitle(it.title) == key }
             if (rom == null) {
-                _game.update { if (it?.rom?.id == stub.id) it.copy(loading = false, error = "Not found on your sources right now.") else it }
+                _game.update { if (it != null && gen == gameGen) it.copy(loading = false, error = "Not found on your sources right now.") else it }
                 return@launch
             }
-            if (_game.value?.rom?.id == stub.id) showGame(GamePage(rom))
+            if (_game.value != null && gen == gameGen) showGame(GamePage(rom))
         }
     }
 
@@ -372,7 +423,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     } else if (pageUrl != null) {
                         // The site wants a browser: open its page here, the download is taken over from it.
                         messages.tryEmit("${option.sourceLabel} needs its page opened: finish it there, the download starts here.")
-                        _browser.value = BrowserRequest(option.entry.title, option.entry.system, option.entry.source, page.rom.cover ?: option.entry.cover, pageUrl)
+                        _browser.value = BrowserRequest(option.entry.title, option.entry.system, option.entry.source, page.rom.cover ?: option.entry.cover, pageUrl, gameKey = gameKey(page.rom))
                     } else {
                         messages.tryEmit(r.error)
                     }
@@ -387,7 +438,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // there is to go through. Anything else: the site's page for the file.
         val fileServerCheck = job.error?.contains("browser check", ignoreCase = true) == true
         val page = (if (fileServerCheck) job.url else null) ?: job.pageUrl ?: return
-        _browser.value = BrowserRequest(job.title, job.system, job.source, job.cover, page, replacesJob = job.id)
+        val game = _jobsByGame.value.entries.firstOrNull { it.value == job.id }?.key
+        _browser.value = BrowserRequest(job.title, job.system, job.source, job.cover, page, replacesJob = job.id, gameKey = game)
     }
 
     /** Get one file through the site's page: its download page on the site, else the game's page. */
@@ -397,7 +449,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val fileHost = runCatching { android.net.Uri.parse(option.file.url).host }.getOrNull()
         val page = if (fileHost != null && fileHost == entryHost) option.file.url else option.file.sourceUrl ?: option.entry.url
         if (page.isBlank()) return
-        _browser.value = BrowserRequest(option.entry.title, option.entry.system, option.entry.source, _game.value?.rom?.cover ?: option.entry.cover, page)
+        val game = _game.value?.rom
+        _browser.value = BrowserRequest(option.entry.title, option.entry.system, option.entry.source, game?.cover ?: option.entry.cover, page, gameKey = game?.let(::gameKey))
     }
 
     fun closeBrowser() { _browser.value = null }
@@ -420,7 +473,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             when (r) {
                 is StartResult.Started -> {
                     request.replacesJob?.let { store.downloads.remove(it) }
-                    _game.value?.let { g -> _jobsByGame.update { it + (gameKey(g.rom) to r.job.id) } }
+                    // The game the browser was opened for, not whatever page is open now.
+                    request.gameKey?.let { key -> _jobsByGame.update { it + (key to r.job.id) } }
                     messages.tryEmit("Downloading $name")
                     appRef.startDownloadService()
                 }
@@ -438,9 +492,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------------- library
 
     fun refreshLibrary() {
-        viewModelScope.launch {
+        // One scan at a time: an older one finishing late must not overwrite a newer one.
+        libraryJob?.cancel()
+        libraryJob = viewModelScope.launch {
             _libraryLoading.value = true
-            _installed.value = runCatching { store.installed() }.getOrDefault(emptyList())
+            val games = try {
+                store.installed()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                emptyList()
+            }
+            ensureActive()
+            _installed.value = games
             _libraryLoading.value = false
             _libraryGame.update { open -> open?.let { g -> _installed.value.firstOrNull { it.id == g.id } ?: g } }
         }

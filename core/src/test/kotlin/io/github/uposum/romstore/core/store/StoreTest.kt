@@ -279,6 +279,63 @@ class StoreTest {
         assertEquals(listOf("quizdais.zip"), options.map { it.file.filename })
     }
 
+    @Test fun gamePageKeepsEverySourceItHasFound() = runBlocking {
+        val settings = SettingsStore(File(dir, "s.json"))
+        settings.update { it.copy(sourceAddresses = mapOf("romspedia" to "https://romspedia.invalid", "retrostic" to "https://retrostic.invalid")) }
+        val store = StoreService(settings, File(dir, "data"), File(dir, "cache"), library = { null })
+        fun file(id: String) = io.github.uposum.romstore.core.model.RomFile(id, "$id.zip", "https://x/$id.zip", 1000)
+        // Opened from a console page: one source, its link loaded.
+        val fromConsole = Dedupe.merge(listOf(RomEntry("romspedia", "1", "Game", "psp", files = listOf(file("a"))))).first()
+        store.details(fromConsole)
+        // Opened from a search: two sources, neither resolved yet (no reader configured
+        // here, so only saved links can fill them). The saved one must not hide the other.
+        val fromSearch = Dedupe.merge(listOf(
+            RomEntry("romspedia", "1", "Game", "psp"),
+            RomEntry("retrostic", "2", "Game", "psp", files = listOf(file("b"))),
+        )).first()
+        val d = store.details(fromSearch)
+        assertEquals(setOf("a.zip", "b.zip"), d.entries.flatMap { it.files }.map { it.filename }.toSet())
+        // Opened again with only the first source: the second, found before, is still offered.
+        val again = store.details(Dedupe.merge(listOf(RomEntry("romspedia", "1", "Game", "psp"))).first())
+        assertEquals(setOf("a.zip", "b.zip"), again.entries.flatMap { it.files }.map { it.filename }.toSet())
+        // A source switched off since is not brought back from the saved links.
+        settings.update { it.copy(sourceAddresses = mapOf("romspedia" to "https://romspedia.invalid")) }
+        val off = store.details(Dedupe.merge(listOf(RomEntry("romspedia", "1", "Game", "psp"))).first())
+        assertEquals(setOf("a.zip"), off.entries.flatMap { it.files }.map { it.filename }.toSet())
+    }
+
+    @Test fun sevenZipArchivesUnpack() {
+        // LZMA2, the 7z default: needs org.tukaani:xz at runtime (it was missing and every 7z crashed the app).
+        val archive = File(dir, "Game (USA).7z")
+        val rom = ByteArray(300_000) { (it % 97).toByte() }
+        org.apache.commons.compress.archivers.sevenz.SevenZOutputFile(archive).use { out ->
+            val entry = out.createArchiveEntry(File(dir, "x"), "Game (USA)/Game (USA).iso")
+            out.putArchiveEntry(entry); out.write(rom); out.closeArchiveEntry()
+            val junk = out.createArchiveEntry(File(dir, "x"), "CDRomance.url")
+            out.putArchiveEntry(junk); out.write("[InternetShortcut]".toByteArray()); out.closeArchiveEntry()
+        }
+        val library = JavaFileLibrary(File(dir, "ROMs").apply { mkdirs() })
+        val folder = library.consoleFolder("psp", create = true)!!
+        archive.copyTo(File(dir, "ROMs/psp/Game (USA).7z"))
+        val node = folder.list().first { it.name.endsWith(".7z") }
+        val produced = Unpack.unpack(node, folder, File(dir, "scratch"))
+        assertEquals(listOf("Game (USA).iso"), produced.map { it.name })
+        assertTrue(File(dir, "ROMs/psp/Game (USA).iso").readBytes().contentEquals(rom))
+    }
+
+    @Test fun cleanNamesKeepDiscNumbers() {
+        val info = io.github.uposum.romstore.core.model.Content.classify("Final Fantasy VII (USA) (Disc 2).zip", "Final Fantasy VII")
+        val base = io.github.uposum.romstore.core.model.FileNames.base("Final Fantasy VII", info, "USA")
+        assertEquals("Final Fantasy VII (USA) (Disc 2).zip", io.github.uposum.romstore.core.model.FileNames.rename("Final Fantasy VII (USA) (Disc 2).zip", base, "psx"))
+    }
+
+    @Test fun twoDownloadsOfOneFileUseTheirOwnPartFiles() {
+        val a = DownloadJob("dl-1-1", "Game", "psx", "s", "Game.zip", "u", "d")
+        val b = DownloadJob("dl-1-2", "Game", "psx", "s", "Game.zip", "u", "d")
+        assertTrue(a.partName != b.partName)
+        assertTrue(a.partName.endsWith(".part"))
+    }
+
     @Test fun regionFilterKeepsUnknownGames() {
         val usa = Dedupe.merge(listOf(RomEntry("a", "1", "Game (USA)", "snes"))).first()
         val unknown = Dedupe.merge(listOf(RomEntry("a", "2", "Other", "snes"))).first()

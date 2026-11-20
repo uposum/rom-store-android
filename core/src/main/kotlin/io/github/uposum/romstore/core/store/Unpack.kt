@@ -35,6 +35,8 @@ object Unpack {
 
     class UnpackError(message: String) : Exception(message)
 
+    private val JUNK = listOf(".url", ".lnk", ".webloc", ".desktop", "thumbs.db", "desktop.ini", ".ds_store")
+
     /**
      * Extract every file of `archive` into `destination` (flat). Returns the
      * new files. `scratch` is a folder for a temporary copy (RAR needs one).
@@ -54,6 +56,8 @@ object Unpack {
         fun copyEntry(name: String, input: InputStream) {
             val clean = Html.safeFilename(name.replace('\\', '/').substringAfterLast('/'), "")
             if (clean.isEmpty()) return
+            // Links and folder clutter that ride along in uploads ("CDRomance.url", Thumbs.db).
+            if (JUNK.any { clean.lowercase().endsWith(it) }) return
             val node = route(clean).createFile(clean)
             produced += node
             node.openWrite(append = false).use { out ->
@@ -77,11 +81,18 @@ object Unpack {
                     }
                 }
                 ".7z" -> archive.openSeekable().use { channel ->
-                    SevenZFile.builder().setSeekableByteChannel(channel).get().use { sz ->
+                    // A 7z made with a huge dictionary needs that much memory to read; with
+                    // a limit it is reported (and kept) instead of running the app out of memory.
+                    SevenZFile.builder().setSeekableByteChannel(channel).setMaxMemoryLimitKiB(sevenZipMemoryKb()).get().use { sz ->
                         while (true) {
                             val entry = sz.nextEntry ?: break
                             if (entry.isDirectory || entry.isAntiItem) continue
-                            copyEntry(entry.name, sz.getInputStream(entry))
+                            // Read the entry nextEntry() opened: getInputStream(entry) builds a second
+                            // decoder with its own dictionary (two 314 MB buffers for one PSP 7z).
+                            copyEntry(entry.name, object : InputStream() {
+                                override fun read(): Int = sz.read()
+                                override fun read(b: ByteArray, off: Int, len: Int): Int = sz.read(b, off, len)
+                            })
                         }
                     }
                 }
@@ -106,6 +117,12 @@ object Unpack {
         } catch (e: UnpackError) {
             produced.forEach { runCatching { it.delete() } }
             throw e
+        } catch (e: org.apache.commons.compress.MemoryLimitException) {
+            produced.forEach { runCatching { it.delete() } }
+            throw UnpackError("this 7z needs ${e.memoryNeededInKb / 1024} MB of memory to unpack, more than Android gives the app. The .7z is kept: extract it with a file manager (e.g. ZArchiver) into the same folder")
+        } catch (e: OutOfMemoryError) {
+            produced.forEach { runCatching { it.delete() } }
+            throw UnpackError("not enough memory to unpack this archive on this device; the archive is kept")
         } catch (e: Exception) {
             produced.forEach { runCatching { it.delete() } }
             throw UnpackError("Could not unpack the archive: ${e.message ?: e.javaClass.simpleName}")
@@ -113,6 +130,22 @@ object Unpack {
         if (produced.isEmpty()) throw UnpackError("The archive is empty")
         return produced
     }
+
+    /**
+     * Memory a 7z decoder may take: what the app may still use right now, less
+     * 64 MB for everything else. Unpacks run one at a time (`Unpack.lock`), so
+     * two big archives never need their dictionaries at once.
+     */
+    internal fun sevenZipMemoryKb(): Int {
+        val rt = Runtime.getRuntime()
+        val max = rt.maxMemory().takeIf { it in 1 until Long.MAX_VALUE } ?: (256L shl 20)
+        val used = rt.totalMemory() - rt.freeMemory()
+        val free = max - used - (64L shl 20)
+        return (free / 1024).coerceIn(32L * 1024, Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    /** One unpack at a time (each may need a large share of the app's memory). */
+    val lock = Any()
 
     private fun sniff(node: FileNode): String? {
         val head = ByteArray(8)

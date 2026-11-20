@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -46,6 +47,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -112,7 +116,9 @@ fun SettingsTab(vm: AppViewModel, section: SettingsSection, onSection: (Settings
                 }
             }
             LazyColumn(
-                Modifier.weight(1f).fillMaxHeight(),
+                // Edge to edge: the keyboard's height is padding here (the shell pads the
+                // screen too; inset padding is only applied once).
+                Modifier.weight(1f).fillMaxHeight().imePadding(),
                 contentPadding = PaddingValues(start = 16.dp, end = 28.dp, top = 18.dp, bottom = 40.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -133,7 +139,7 @@ fun SettingsTab(vm: AppViewModel, section: SettingsSection, onSection: (Settings
 private fun androidx.compose.foundation.lazy.LazyListScope.libraryPane(vm: AppViewModel) {
     item {
         val settings by vm.settings.collectAsStateWithLifecycle()
-        val pick = rememberFolderPicker { vm.setLibraryFolder(it) }
+        val pick = rememberFolderPicker(vm.messages::tryEmit) { vm.setLibraryFolder(it) }
         PaneTitle("ROM folders", "Each console's games go into its own folder inside the ROM folder (gba, snes, psx…), the layout ES-DE, Daijishō and most emulators read. Pick a different folder for a console below if you keep it elsewhere.")
         Card {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -152,9 +158,10 @@ private fun androidx.compose.foundation.lazy.LazyListScope.libraryPane(vm: AppVi
 @Composable
 private fun ConsoleFolders(vm: AppViewModel) {
     val settings by vm.settings.collectAsStateWithLifecycle()
-    var pending by remember { mutableStateOf<String?>(null) }
+    // Survives the activity being recreated while the system's folder picker is open.
+    var pending by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     var showAll by remember { mutableStateOf(false) }
-    val pick = rememberFolderPicker { uri -> pending?.let { vm.setConsoleFolder(it, uri) } }
+    val pick = rememberFolderPicker(vm.messages::tryEmit) { uri -> pending?.let { vm.setConsoleFolder(it, uri) } }
     val keys = (Systems.POPULAR + settings.consoleFolders.keys).distinct().let { base ->
         if (showAll) (base + Systems.known().map { it.key }).distinct() else base
     }
@@ -435,15 +442,34 @@ private fun EditableField(value: String, placeholder: String, type: KeyboardType
     val requester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val shape = RoundedCornerShape(10.dp)
+    val bring = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    /** Set when B closed the edit: focus goes back to the field's button. */
+    var refocus by remember { mutableStateOf(false) }
     fun commit() {
         editing = false
         hadFocus = false
         keyboard?.hide()
         if (text != value) onCommit(text)
     }
-    LaunchedEffect(editing) { if (editing) { runCatching { requester.requestFocus() }; keyboard?.show() } }
+    // B while typing closes the keyboard and keeps what was typed; it does not leave Settings.
+    BackHandler(enabled = editing) { refocus = true; commit() }
+    LaunchedEffect(editing) {
+        if (editing) {
+            runCatching { requester.requestFocus() }
+            keyboard?.show()
+            // Once the keyboard is up (and the list has shrunk above it), the field is scrolled into view.
+            repeat(3) { kotlinx.coroutines.delay(250); runCatching { bring.bringIntoView() } }
+        } else if (refocus) {
+            refocus = false
+            withFrameNanos { }
+            runCatching { requester.requestFocus() }
+        }
+    }
     Box(
         Modifier.fillMaxWidth().heightIn(min = 42.dp)
+            .bringIntoViewRequester(bring)
+            // On the box: it finds the button when not editing and the field when editing.
+            .focusRequester(requester)
             .then(if (!editing) Modifier.pressable(shape = shape) { editing = true } else Modifier)
             .background(C.bg, shape).padding(horizontal = 14.dp),
         contentAlignment = Alignment.CenterStart,
@@ -455,7 +481,7 @@ private fun EditableField(value: String, placeholder: String, type: KeyboardType
                 cursorBrush = SolidColor(C.accent),
                 keyboardOptions = KeyboardOptions(keyboardType = type, imeAction = ImeAction.Done, autoCorrectEnabled = false),
                 keyboardActions = KeyboardActions(onDone = { commit() }),
-                modifier = Modifier.fillMaxWidth().focusRequester(requester).onFocusChanged {
+                modifier = Modifier.fillMaxWidth().onFocusChanged {
                     // The field starts unfocused; only leaving it after it had focus ends the edit.
                     if (it.isFocused) hadFocus = true else if (hadFocus && editing) commit()
                 },

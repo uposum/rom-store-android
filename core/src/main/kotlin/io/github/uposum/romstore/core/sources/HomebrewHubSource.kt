@@ -71,7 +71,8 @@ class HomebrewHubSource(http: HttpClient, options: SourceOptions) : Source(http,
     // ------------------------------------------------------------------ parse
     private fun static(item: JsonObject, path: String): String {
         val basepath = if (truthy(item["basepath"])) pyStr(item["basepath"]) else "database-gb"
-        return "$base/static/$basepath/entries/${pyStr(item["slug"])}/$path"
+        // Slugs and file names can hold spaces, "#" or "?": quoted, so the URL names the file.
+        return "$base/static/$basepath/entries/${Html.quote(pyStr(item["slug"]), safe = "")}/${Html.quote(path)}"
     }
 
     private fun entries(data: JsonObject): List<RomEntry> {

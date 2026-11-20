@@ -90,16 +90,18 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
     var showAll by remember(rom.id) { mutableStateOf(false) }
     val downloadFocus = remember { FocusRequester() }
     val primary = page.main.firstOrNull() ?: page.options.firstOrNull()
-    val pickFolder = rememberFolderPicker { vm.setConsoleFolder(rom.system, it) }
+    val pickFolder = rememberFolderPicker(vm.messages::tryEmit) { vm.setConsoleFolder(rom.system, it) }
 
-    BackHandler(enabled = lightbox == null) { vm.closeGame() }
+    val browser by vm.browser.collectAsStateWithLifecycle()
+    BackHandler(enabled = lightbox == null && browser == null) { vm.closeGame() }
     OnPad { button ->
-        if (button == PadButton.X && lightbox == null && primary != null && job?.active != true) vm.download(primary)
+        // Under the in-app browser the page takes no buttons.
+        if (button == PadButton.X && browser == null && lightbox == null && primary != null && job?.active != true) vm.download(primary)
         true
     }
     val keys = androidx.compose.ui.platform.LocalInputModeManager.current.inputMode == androidx.compose.ui.input.InputMode.Keyboard
     LaunchedEffect(rom.id, page.loading) {
-        if (gamepad || keys) runCatching { downloadFocus.requestFocus() }
+        if ((gamepad || keys) && vm.browser.value == null) runCatching { downloadFocus.requestFocus() }
     }
 
     Box(Modifier.fillMaxSize().background(C.bg).trapFocus()) {
@@ -264,7 +266,12 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
                 Modifier.align(Alignment.BottomCenter),
             )
         }
-        lightbox?.let { index -> rom.media?.shots?.let { Lightbox(it, index, onIndex = { i -> lightbox = i }) { lightbox = null } } }
+        lightbox?.let { index ->
+            // The shots can change under an open viewer (details arriving): never index past them.
+            val shots = rom.media?.shots.orEmpty()
+            if (shots.isEmpty()) LaunchedEffect(Unit) { lightbox = null }
+            else Lightbox(shots, index.coerceIn(shots.indices), onIndex = { i -> lightbox = i }) { lightbox = null }
+        }
     }
 }
 

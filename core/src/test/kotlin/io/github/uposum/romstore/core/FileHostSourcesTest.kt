@@ -3,6 +3,7 @@ package io.github.uposum.romstore.core
 import io.github.uposum.romstore.core.art.FakeHttp
 import io.github.uposum.romstore.core.model.Content
 import io.github.uposum.romstore.core.model.ContentKind
+import io.github.uposum.romstore.core.model.RomEntry
 import io.github.uposum.romstore.core.net.FileHosts
 import io.github.uposum.romstore.core.net.HttpError
 import io.github.uposum.romstore.core.sources.ArchiveOrgSource
@@ -89,6 +90,32 @@ class FileHostSourcesTest {
         assertFalse(titles.any { "300cc" in it || "kiosk" in it || "mods" in it || "soundtrack" in it })
         assertTrue(files.all { (_, f) -> f.url.startsWith("https://archive.org/download/") })
         assertFalse(files.any { (_, f) -> "firmware" in f.filename.lowercase() || f.filename.endsWith(".keys") })
+    }
+
+    @Test fun nswGameNeverOffersTorrents() {
+        val html = """<h2>Download</h2><p>Base game: <a href="https://1fichier.com/?abc">1fichier</a> – """ +
+            """<a href="https://mgnet.site/xyz">Torrent</a> – <a href="https://example.org/f.torrent">Mirror</a> – """ +
+            """<a href="magnet:?xt=urn:btih:abc">Magnet</a></p>"""
+        val entry = RomEntry(source = "nswgame", sourceId = "x", title = "Game", system = "switch", url = "https://nswgf.com/x/")
+        val files = nsw.parseFiles(html, entry)
+        assertEquals(listOf("https://1fichier.com/?abc"), files.map { it.url })
+    }
+
+    @Test fun nswGameBrowseSaysWhenItsFirstPageFails() = runBlocking {
+        val down = NswGameSource(FakeHttp { throw HttpError("HTTP 503", 503, it.url) }, SourceOptions("nswgame", "NSWGame", "https://nswgf.com"))
+        try {
+            down.browse("switch", 40)
+            fail("expected the failure to be reported")
+        } catch (e: HttpError) {
+            assertEquals(503, e.status)
+        }
+    }
+
+    @Test fun archiveTellsTheConsoleFromTheTitleBeforeTheDescription() {
+        assertEquals("ps2", ArchiveOrgSource.systemFor("iso", "Tekken 4", "Tekken 4 for PlayStation 2. Switch between characters."))
+        assertEquals(null, ArchiveOrgSource.systemFor("zip", "Some Game", "You can switch between two characters"))
+        assertEquals("switch", ArchiveOrgSource.systemFor("zip", "Some Game", "A Nintendo Switch game"))
+        assertEquals("wii", ArchiveOrgSource.systemFor("iso", "Some Game Wii", "switch between characters"))
     }
 
     @Test fun archiveQueriesWithoutUpdateAndDlcWords() {

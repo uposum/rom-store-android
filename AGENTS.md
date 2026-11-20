@@ -170,4 +170,16 @@ the application id: installed copies could not update.
   `cleanFileNames`): "<Game> [Update 4.0.1|DLC] (Region) [TitleID][vN].ext";
   a single game file unpacked from an archive gets the same name; disc sets
   (.cue/.bin, .gdi, .m3u) keep theirs.
+- **7z needs `org.tukaani:xz`** (LZMA/LZMA2): commons-compress only declares it
+  optional. Without it every 7z threw `NoClassDefFoundError` at unpack and
+  closed the app (v1.3.x). `StoreTest.sevenZipArchivesUnpack` guards it. The
+  7z decoder gets a memory budget (`Unpack.sevenZipMemoryKb`, through
+  `setMaxMemoryLimitKiB`: the `...Kb` setter divides by 1024); an archive that
+  needs more is kept and reported. The app runs with `largeHeap`.
+- **Nothing a job throws may end the app**: download runs catch `Throwable`,
+  the app scope has a `CoroutineExceptionHandler`, and the download service
+  calls `startForeground` on every start command.
+- **Each download has its own `.part`** (`<file>.<job id>.part`; the old
+  per-file name is adopted on resume). A run writes its job's state only while
+  it owns the job's cancel token, and cancel/retry stop the HTTP call.
 

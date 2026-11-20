@@ -84,7 +84,11 @@ class ArchiveOrgSource(http: HttpClient, options: SourceOptions) : Source(http, 
             Triple(name, ext, str(f["size"])?.toLongOrNull())
         }
         if (games.isEmpty()) return emptyList()
-        val context = listOf(title, all(meta["subject"]), all(meta["collection"]), str(meta["description"])?.take(400) ?: "").joinToString(" ")
+        // The console from the title, subjects and collections; the description
+        // only when they say nothing (and never its bare "switch": "switch
+        // between characters").
+        val context = listOf(title, all(meta["subject"]), all(meta["collection"])).joinToString(" ")
+        val description = str(meta["description"])?.take(400) ?: ""
         val year = (str(meta["year"]) ?: str(meta["date"]))?.take(4)?.toIntOrNull()
         val page = "$base/details/$id"
 
@@ -99,7 +103,7 @@ class ArchiveOrgSource(http: HttpClient, options: SourceOptions) : Source(http, 
         )
 
         if (games.size <= SINGLE_UPLOAD) {
-            val system = games.firstNotNullOfOrNull { systemFor(it.second, it.first + " " + context) } ?: return emptyList()
+            val system = games.firstNotNullOfOrNull { systemFor(it.second, it.first + " " + context, description) } ?: return emptyList()
             // One file whose name is the item's title minus noise ("Mario Kart 8 Deluxe abc" → its "Mario Kart 8 Deluxe.nsp"): the file's name.
             val only = games.singleOrNull()?.first?.substringAfterLast('/')?.substringBeforeLast('.')
             val titleWords = normalizeTitle(cleanTitle(title)).split(' ').filter { it.isNotEmpty() }.toSet()
@@ -110,7 +114,7 @@ class ArchiveOrgSource(http: HttpClient, options: SourceOptions) : Source(http, 
                 downloads = downloads, year = year, region = extractRegion(title),
             )
             entry.extra.putFlag("fileNamed")
-            entry.files = games.filter { systemFor(it.second, it.first + " " + context) == system }.map { file(it.first, it.third) }
+            entry.files = games.filter { systemFor(it.second, it.first + " " + context, description) == system }.map { file(it.first, it.third) }
             entry.size = entry.files.firstNotNullOfOrNull { it.size }
             return listOf(entry)
         }
@@ -119,7 +123,7 @@ class ArchiveOrgSource(http: HttpClient, options: SourceOptions) : Source(http, 
             val n = normalizeTitle(name.substringAfterLast('/'))
             words.all { it.lowercase() in n }
         }.take(30).mapNotNull { (name, ext, size) ->
-            val system = systemFor(ext, name + " " + context) ?: return@mapNotNull null
+            val system = systemFor(ext, name + " " + context, description) ?: return@mapNotNull null
             val bare = name.substringAfterLast('/').substringBeforeLast('.')
             RomEntry(
                 source = id(), sourceId = "$id/$name", title = cleanTitle(bare), system = system, url = page,
@@ -143,9 +147,9 @@ class ArchiveOrgSource(http: HttpClient, options: SourceOptions) : Source(http, 
             "zip", "7z", "rar",
         )
 
-        /** Uploads that are not a game: mods, patches, demos, saves, art. */
+        /** Uploads that are not a game: mods, patches, demos, saves, art, 3D models. */
         private val NOT_A_GAME = Regex(
-            """\b(mods?|modded|patch(es)?|cheats?|saves?|save ?data|shaders?|textures?|logo|soundtrack|ost|manual|wallpapers?|fake|leak|demo|kiosk|trainer|translation|romhack|hack)\b""",
+            """\b(mods?|modded|3d models?|models|stls?|\.stl|patch(es)?|cheats?|saves?|save ?data|shaders?|textures?|logo|soundtrack|ost|manual|wallpapers?|fake|leak|demo|kiosk|trainer|translation|romhack|hack)\b""",
             RegexOption.IGNORE_CASE,
         )
 
@@ -188,11 +192,21 @@ class ArchiveOrgSource(http: HttpClient, options: SourceOptions) : Source(http, 
             """\b(genesis|mega drive)\b""" to "genesis",
         ).map { (pattern, system) -> Regex(pattern, RegexOption.IGNORE_CASE) to system }
 
-        fun systemFor(ext: String, text: String): String? {
+        /** The console of a file: its extension, else the words in `text` (file
+         * name, item title, subjects, collections), else `description`, where
+         * "switch" alone is an ordinary word and does not count. */
+        fun systemFor(ext: String, text: String, description: String = ""): String? {
             BY_EXTENSION[ext]?.let { return it }
             val spaced = text.replace('_', ' ').replace('-', ' ')
-            return KEYWORDS.firstOrNull { it.first.containsMatchIn(spaced) }?.second
+            KEYWORDS.firstOrNull { it.first.containsMatchIn(spaced) }?.let { return it.second }
+            if (description.isBlank()) return null
+            val desc = description.replace('_', ' ').replace('-', ' ')
+            return KEYWORDS.firstOrNull { (re, system) ->
+                if (system == "switch") DESCRIPTION_SWITCH.containsMatchIn(desc) else re.containsMatchIn(desc)
+            }?.second
         }
+
+        private val DESCRIPTION_SWITCH = Regex("""\b(nintendo switch|nsp|xci)\b""", RegexOption.IGNORE_CASE)
 
         /** The words a title must contain; "update"/"dlc" are dropped (uploads say "UPD", "v3.0.4"). */
         fun queryWords(query: String): List<String> =

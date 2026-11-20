@@ -53,9 +53,10 @@ class SwitchRomsSource(http: HttpClient, options: SourceOptions) : Source(http, 
     private fun parseCards(html: String): List<RomEntry> {
         val entries = mutableListOf<RomEntry>()
         val seen = HashSet<String>()
-        val host = urlParse(base).netloc
+        // The site moves between www. and the bare host: accept either.
+        val host = urlParse(base).netloc.lowercase().removePrefix("www.")
         val pattern = Regex(
-            """<a[^>]+href="(https?://""" + Regex.escape(host) + """/[^"#?]+/)"[^>]*>(.*?)</a>""",
+            """<a[^>]+href="(https?://(?:www\.)?""" + Regex.escape(host) + """/[^"#?]+/)"[^>]*>(.*?)</a>""",
             setOf(I, S),
         )
         for (match in pattern.findAllFast(html)) {
@@ -204,7 +205,10 @@ class SwitchRomsSource(http: HttpClient, options: SourceOptions) : Source(http, 
         private val DATE_PATH_RE = Regex("""${UNI}^/\d{4}/\d{2}/\d{2}/?$""")
         private val SKIP_PREFIXES = listOf("/author/", "/category/", "/tag/", "/feed", "/page/")
         private val MULTI_SPACE_RE = Regex("""${UNI}\s{2,}""")
-        private val HASH_PREFIX_RE = Regex("""${UNI}^\d+[a-z0-9]*-""")
+        // File hosts put a random id before the name: "1699999999abc-" or eight
+        // lowercase letters and digits ("i0reu1la-"); a digit is required in
+        // the latter so a name such as "splatoon-3.nsp" keeps its first word.
+        private val HASH_PREFIX_RE = Regex("""${UNI}^(?:\d+[a-z0-9]*|(?=[a-z]{0,7}\d)[a-z0-9]{8})-""")
 
         // What the site adds around a game's name: "Download Pokémon Violet",
         // "Super Smash Bros Ultimate Switch (NSP/XCI) Download", "Minecraft Switch

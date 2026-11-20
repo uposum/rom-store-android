@@ -13,6 +13,7 @@ dependencies {
     api(libs.okhttp)
     implementation(libs.commons.compress)
     implementation(libs.junrar)
+    implementation(libs.xz)
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)

@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 class DownloadService : LifecycleService() {
     private val channel = "downloads"
     private val notificationId = 1
+    private var lastStartId = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -30,18 +31,16 @@ class DownloadService : LifecycleService() {
         if (Build.VERSION.SDK_INT >= 26) {
             manager.createNotificationChannel(NotificationChannel(channel, getString(R.string.channel_downloads), NotificationManager.IMPORTANCE_LOW))
         }
-        ServiceCompat.startForeground(
-            this, notificationId, build("Starting download…", 0, 0, true),
-            if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
-        )
+        goForeground("Starting download…")
         val store = (application as RomStoreApp).store
         lifecycleScope.launch {
             @OptIn(kotlinx.coroutines.FlowPreview::class)
             store.downloads.state.sample(800).collect { jobs ->
                 val active = jobs.filter { it.active }
                 if (active.isEmpty()) {
-                    ServiceCompat.stopForeground(this@DownloadService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    // Only when no start came in since the last one seen: a download that is
+                    // starting right now keeps the service (its onStartCommand is on its way).
+                    if (stopSelfResult(lastStartId)) ServiceCompat.stopForeground(this@DownloadService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     return@collect
                 }
                 val received = active.sumOf { it.received }
@@ -60,7 +59,41 @@ class DownloadService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        lastStartId = startId
+        // Every startForegroundService() needs a startForeground() answer within seconds,
+        // also when the service is already running or has just put its notification away
+        // (a download finishing as the next one starts); without it Android ends the app.
+        goForeground("Downloading…")
         return START_NOT_STICKY
+    }
+
+    /**
+     * Android 15+ limits dataSync foreground services (about six hours a day) and
+     * ends the app if the service is still foreground when the time is up. The
+     * service stops at once; the downloads themselves carry on in the app's process.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopNow()
+    }
+
+    @Deprecated("Android 14's variant; Android 15+ calls the one with the service type.")
+    override fun onTimeout(startId: Int) {
+        stopNow()
+    }
+
+    private fun stopNow() {
+        android.util.Log.w("RomStore", "download service: time limit reached, stopping it")
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun goForeground(text: String) {
+        runCatching {
+            ServiceCompat.startForeground(
+                this, notificationId, build(text, 0, 0, true),
+                if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
+            )
+        }.onFailure { android.util.Log.w("RomStore", "foreground service", it) }
     }
 
     private fun build(title: String, received: Long, total: Long, indeterminate: Boolean, text: String? = null): Notification {

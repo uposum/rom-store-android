@@ -28,6 +28,7 @@ class SwitchTitlesTest {
     @Test
     fun switchTitleIds() {
         assertEquals("0100F2C0115B6000", switchTitleId("/roms/switch/Zelda [0100F2C0115B6000][v0].nsp"))
+        assertEquals("a DLC's base game: the low 13 bits go", "0100152000022000", switchTitleId("MK8D DLC [0100152000023001].nsp"))
         assertEquals(
             "an update's ID is the base game's folder",
             "0100F2C0115B6000", switchTitleId("Zelda Update [0100f2c0115b6800].nsp"),

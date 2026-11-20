@@ -114,6 +114,7 @@ object FileNames {
     private val EXT = Regex("""(\.(nsp|nsz|xci|xcz|iso|cso|chd|pbp|wbfs|rvz|wua|wux|cia|3ds|nds|gba|gbc|gb|nes|sfc|smc|n64|z64|v64|pkg|vpk|md|gen|sms|gg|pce|elf))?\.(zip|7z|rar|nsp|nsz|xci|xcz|iso|cso|chd|pbp|wbfs|rvz|wua|wux|cia|3ds|nds|gba|gbc|gb|nes|sfc|smc|n64|z64|v64|pkg|vpk|md|gen|sms|gg|pce|elf)$""", RegexOption.IGNORE_CASE)
     private val SWITCH_VERSION = Regex("""\[v\d+]""", RegexOption.IGNORE_CASE)
     private val FORBIDDEN = Regex("""[\\/:*?"<>|]""")
+    private val DISC = Regex("""[(\[]\s*(disc|disk|cd|dvd|side)\s*[0-9a-d]+(\s*of\s*\d+)?\s*[)\]]""", RegexOption.IGNORE_CASE)
 
     /** The clean name without extension and without Switch IDs ("Mario Kart 8 Deluxe Update 4.0.1 (Europe)"). */
     fun base(title: String, content: ContentInfo, region: String?): String {
@@ -131,11 +132,13 @@ object FileNames {
         val lower = original.lowercase()
         if (KEEP.any { lower.endsWith(it) }) return original
         val ext = EXT.find(original)?.value ?: return original
+        // "(Disc 2)" is what tells the discs of one game apart.
+        val disc = DISC.find(original)?.value?.let { m -> " (" + m.trim('(', ')', ' ', '[', ']') + ")" } ?: ""
         val ids = if (system == "switch") {
             listOfNotNull(Content.titleId(original)?.let { "[$it]" }, SWITCH_VERSION.find(original)?.value?.lowercase()).joinToString("")
         } else ""
         // "Title: Subtitle" is written "Title - Subtitle" in file names (":" is not allowed on SD cards).
-        val joined = listOf(base, ids).filter { it.isNotEmpty() }.joinToString(" ").replace(": ", " - ")
+        val joined = listOf(base + disc, ids).filter { it.isNotEmpty() }.joinToString(" ").replace(": ", " - ")
         val name = FORBIDDEN.replace(joined, " ").replace(Regex("\\s{2,}"), " ").trim()
         return if (name.isEmpty()) original else name + ext.lowercase()
     }

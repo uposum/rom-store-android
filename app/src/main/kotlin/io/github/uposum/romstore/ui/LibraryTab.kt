@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -64,7 +65,7 @@ fun LibraryTab(vm: AppViewModel) {
     val loading by vm.libraryLoading.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     var console by remember { mutableStateOf<String?>(null) }
-    val pickLibrary = rememberFolderPicker { vm.setLibraryFolder(it) }
+    val pickLibrary = rememberFolderPicker(vm.messages::tryEmit) { vm.setLibraryFolder(it) }
     val systems = remember(games) { games.map { it.system }.distinct().sortedBy { Systems.label(it) } }
     val shown = remember(games, console) { if (console == null) games else games.filter { it.system == console } }
 
@@ -162,10 +163,16 @@ fun LibraryGamePage(vm: AppViewModel, game: LibraryGame, gamepad: Boolean) {
     var confirm by remember(game.id) { mutableStateOf(false) }
     val first = remember { FocusRequester() }
     val keep = remember { FocusRequester() }
+    val delete = remember { FocusRequester() }
+    /** The question was open: closing it puts focus back on Delete, not nowhere. */
+    var asked by remember(game.id) { mutableStateOf(false) }
     BackHandler { if (confirm) confirm = false else vm.openLibraryGame(null) }
     val keys = androidx.compose.ui.platform.LocalInputModeManager.current.inputMode == androidx.compose.ui.input.InputMode.Keyboard
     LaunchedEffect(game.id) { if (gamepad || keys) runCatching { first.requestFocus() } }
-    LaunchedEffect(confirm) { if (confirm) runCatching { keep.requestFocus() } }
+    LaunchedEffect(confirm) {
+        if (confirm) { asked = true; runCatching { keep.requestFocus() } }
+        else if (asked) { withFrameNanos { }; runCatching { delete.requestFocus() } }
+    }
 
     Box(Modifier.fillMaxSize().background(C.bg).trapFocus()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -200,15 +207,21 @@ fun LibraryGamePage(vm: AppViewModel, game: LibraryGame, gamepad: Boolean) {
                         }
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            if (game.needsUnpack) {
-                                Btn("Unpack", { vm.unpack(game) }, Modifier.focusRequester(first), kind = ButtonKind.Primary, icon = Icons.Rounded.Unarchive, big = !LocalDense.current)
-                            } else {
-                                Btn("Open with…", {
-                                    vm.openWith(game)?.let { runCatching { context.startActivity(it) }.onFailure { vm.messages.tryEmit("No app can open this file") } }
-                                }, Modifier.focusRequester(first), kind = ButtonKind.Primary, icon = Icons.AutoMirrored.Rounded.OpenInNew, big = !LocalDense.current)
-                            }
+                            // One button that turns from Unpack into "Open with…" once unpacked,
+                            // so focus stays on it.
+                            val unpack = game.needsUnpack
+                            Btn(
+                                if (unpack) "Unpack" else "Open with…",
+                                {
+                                    if (unpack) vm.unpack(game)
+                                    else vm.openWith(game)?.let { runCatching { context.startActivity(it) }.onFailure { vm.messages.tryEmit("No app can open this file") } }
+                                        ?: vm.messages.tryEmit("No file to open")
+                                },
+                                Modifier.focusRequester(first), kind = ButtonKind.Primary,
+                                icon = if (unpack) Icons.Rounded.Unarchive else Icons.AutoMirrored.Rounded.OpenInNew, big = !LocalDense.current,
+                            )
                             Btn("Store page", { vm.storePage(game) }, icon = Icons.Rounded.Search, big = !LocalDense.current)
-                            Btn("Delete", { confirm = true }, icon = Icons.Rounded.Delete, big = !LocalDense.current)
+                            Btn("Delete", { confirm = true }, Modifier.focusRequester(delete), icon = Icons.Rounded.Delete, big = !LocalDense.current)
                         }
                     }
                     if (game.needsUnpack) {

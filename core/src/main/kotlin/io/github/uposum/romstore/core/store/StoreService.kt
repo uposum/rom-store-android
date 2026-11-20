@@ -502,16 +502,28 @@ class StoreService(
     suspend fun details(rom: MergedRom): MergedRom = withContext(Dispatchers.IO) {
         val key = sha1("${rom.title.trim().lowercase()}|${rom.system}")
         val cacheFile = cacheFile("details", key)
-        readJson(cacheFile, CachedDetails.serializer())?.let { cached ->
-            if (System.currentTimeMillis() - cached.at < ttlMs && cached.entries.any { it.files.isNotEmpty() } &&
-                cached.entries.none { e -> e.files.any { LinkCheck.expired(it.url) } }
-            ) {
-                val copy = rom.copy(entries = cached.entries, media = cached.media ?: rom.media)
-                markInstalled(listOf(copy))
-                return@withContext copy
-            }
-        }
-        val entries = rom.entries.map { it.copy(extra = it.extra.toMutableMap()) }
+        // Saved links are kept per source, never for the whole game: the same game
+        // opened from a console page and from a search has different sources, and
+        // a source that failed last time is asked again.
+        val cached = readJson(cacheFile, CachedDetails.serializer())?.takeIf { System.currentTimeMillis() - it.at < ttlMs }
+        val configured = buildSources().map { it.id }.toSet()
+        val known = cached?.entries.orEmpty()
+            // A source turned off or removed since is not brought back from the cache.
+            .filter { e -> e.source in configured && e.files.isNotEmpty() && e.files.none { LinkCheck.expired(it.url) } }
+            .associateBy { it.key }
+        val entries = rom.entries.map { e ->
+            val saved = known[e.key]
+            if (saved != null && e.files.isEmpty()) {
+                e.copy(extra = e.extra.toMutableMap()).also { copy ->
+                    copy.files = saved.files
+                    if (copy.size == null) copy.size = saved.size
+                    copy.extra.remove("error")
+                }
+            } else e.copy(extra = e.extra.toMutableMap())
+        }.toMutableList()
+        // Sources found for this game on an earlier visit that this list lacks.
+        val present = entries.map { it.key }.toSet()
+        known.values.filter { it.key !in present }.forEach { entries += it.copy(extra = it.extra.toMutableMap()) }
         val pending = entries.filter { it.files.isEmpty() }
         val sources = buildSources().associateBy { it.id }
         coroutineScope {
@@ -541,13 +553,15 @@ class StoreService(
             }.awaitAll()
         }
         val primary = entries.firstOrNull()
-        val media = primary?.let { entry ->
+        val media = cached?.media ?: primary?.let { entry ->
             val own = sources[entry.source]?.let { runCatching { it.media(entry) }.getOrNull() }
             runCatching { artwork.media(entry, own) }.getOrNull() ?: own
         } ?: rom.media
         val result = rom.copy(entries = entries, media = media)
-        if (entries.any { it.files.isNotEmpty() }) {
-            writeJson(cacheFile, CachedDetails.serializer(), CachedDetails(System.currentTimeMillis(), entries, media))
+        val working = entries.filter { it.files.isNotEmpty() }
+        if (working.isNotEmpty()) {
+            // Only working links are kept; failed sources are asked again next time.
+            writeJson(cacheFile, CachedDetails.serializer(), CachedDetails(System.currentTimeMillis(), working, media))
             cachePrune("details")
         }
         markInstalled(listOf(result))
@@ -695,6 +709,11 @@ class StoreService(
                     if (e is HttpError && e.message?.contains("Cloudflare") == true) {
                         return@withContext StartResult.Failed(e.message!!, file.url.takeIf { it.startsWith("http") } ?: file.sourceUrl ?: entry.url)
                     }
+                    // A site's own answer ("guest download limit reached", a dead link) does not
+                    // change by asking again, and every try may cost a guest download: say it.
+                    if (e is io.github.uposum.romstore.core.sources.SourceError || (e is HttpError && !e.retry)) {
+                        return@withContext StartResult.Failed(e.message ?: "The site did not hand out the file")
+                    }
                     url = file.url
                     if (attempt < 2) delay(700L * (attempt + 1))
                 }
@@ -809,10 +828,12 @@ class StoreService(
             if (file.folder || Unpack.archiveExt(file.name) == null) continue
             val node = children[file.name] ?: continue
             try {
-                produced += Unpack.unpack(node, folder, File(cacheDir, "unpack")).map { it.name }
+                produced += synchronized(Unpack.lock) { System.gc(); Unpack.unpack(node, folder, File(cacheDir, "unpack")) }.map { it.name }
                 node.delete()
             } catch (e: Unpack.UnpackError) {
                 problems += "${file.name}: ${e.message}"
+            } catch (e: OutOfMemoryError) {
+                problems += "${file.name}: not enough memory to unpack it on this device"
             }
         }
         libraryIndex.clear()

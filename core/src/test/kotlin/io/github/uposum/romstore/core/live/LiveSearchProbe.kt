@@ -224,4 +224,20 @@ class LiveSearchProbe {
             list.mapNotNull { it.cover }.take(6).forEach { println("   COVER ${def.id} $it") }
         }
     }
+
+    /** Unpack a local archive (-Dq=path) the way the app does, with the app's memory (-DtestHeap=192m). */
+    @Test
+    fun unpackProbe() {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val path = java.io.File(System.getProperty("q") ?: return)
+        val out = java.nio.file.Files.createTempDirectory("unpack").toFile()
+        val lib = io.github.uposum.romstore.core.store.JavaFileLibrary(out)
+        val folder = lib.consoleFolder("psp", create = true)!!
+        java.io.File(out, "psp/${path.name}").let { path.copyTo(it) }
+        val node = folder.list().first { it.name == path.name }
+        println("   UNPACK heap=${Runtime.getRuntime().maxMemory() shr 20} MB limitKb=${io.github.uposum.romstore.core.store.Unpack.sevenZipMemoryKb()}")
+        val r = runCatching { io.github.uposum.romstore.core.store.Unpack.unpack(node, folder, java.io.File(out, "scratch")) }
+        println("   UNPACK result: " + (r.getOrNull()?.joinToString { "${it.name} ${it.size}" } ?: "${r.exceptionOrNull()}"))
+        out.deleteRecursively()
+    }
 }

@@ -84,9 +84,9 @@ class BoxArtTest {
     @Test
     fun thumbUrlGoesThroughTheProxy() {
         val full = BoxArt.fullUrl("Nintendo - Game Boy", "Tetris (World) (Rev 1).png")
-        assertEquals("https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Game_Boy/master/Named_Boxarts/Tetris%20%28World%29%20%28Rev%201%29.png", full)
+        assertEquals("https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Game_Boy/HEAD/Named_Boxarts/Tetris%20%28World%29%20%28Rev%201%29.png", full)
         assertEquals(
-            "https://wsrv.nl/?url=raw.githubusercontent.com%2Flibretro-thumbnails%2FNintendo_-_Game_Boy%2Fmaster%2FNamed_Boxarts%2FTetris%2520%2528World%2529%2520%2528Rev%25201%2529.png&w=320&h=320&fit=inside&output=webp&q=82",
+            "https://wsrv.nl/?url=raw.githubusercontent.com%2Flibretro-thumbnails%2FNintendo_-_Game_Boy%2FHEAD%2FNamed_Boxarts%2FTetris%2520%2528World%2529%2520%2528Rev%25201%2529.png&w=320&h=320&fit=inside&output=webp&q=82",
             BoxArt.thumbUrl(full),
         )
     }
@@ -96,13 +96,13 @@ class BoxArtTest {
         val root = """{"tree":[{"path":"Named_Boxarts","type":"tree","sha":"abc"},{"path":"Named_Snaps","type":"tree","sha":"def"}]}"""
         val folder = """{"tree":[{"path":"Tetris (World).png","mode":"100644","type":"blob","size":20480},""" +
             """{"path":"Tetris (Europe).png","mode":"120000","type":"blob","size":19}]}"""
-        val http = FakeHttp { FakeHttp.text(it.url, if (it.url.endsWith("/master")) root else folder) }
+        val http = FakeHttp { FakeHttp.text(it.url, if (it.url.endsWith("/HEAD")) root else folder) }
         val dir = Files.createTempDirectory("boxart").toFile()
         val art = BoxArt(http, dir)
         val entry = RomEntry(source = "x", sourceId = "1", title = "Tetris", system = "gb")
         art.apply(listOf(entry), wait = 5.0)
         assertEquals(2, http.asked.size)
-        assertEquals("https://api.github.com/repos/libretro-thumbnails/Nintendo_-_Game_Boy/git/trees/master", http.asked[0].url)
+        assertEquals("https://api.github.com/repos/libretro-thumbnails/Nintendo_-_Game_Boy/git/trees/HEAD", http.asked[0].url)
         assertEquals("https://api.github.com/repos/libretro-thumbnails/Nintendo_-_Game_Boy/git/trees/abc", http.asked[1].url)
         assertTrue(entry.coverFull!!.endsWith("Tetris%20%28World%29.png"))
         assertTrue(java.io.File(dir, "boxart/gb.json").isFile)
@@ -111,5 +111,21 @@ class BoxArtTest {
         val second = RomEntry(source = "x", sourceId = "2", title = "Tetris", system = "gb")
         again.apply(listOf(second), wait = 2.0) // the stored index is read inside the wait, never fetched
         assertEquals(entry.coverFull, second.coverFull)
+    }
+
+    @Test
+    fun aFailedIndexIsNotAskedForAgainForAWhile() = runBlocking {
+        var now = 1_000_000.0
+        val http = FakeHttp { throw io.github.uposum.romstore.core.net.HttpError("HTTP 403", 403, it.url) }
+        val art = BoxArt(http, null)
+        art.clock = { now }
+        val entry = RomEntry(source = "x", sourceId = "1", title = "Tetris", system = "gb")
+        art.apply(listOf(entry), wait = 5.0)
+        assertEquals(1, http.asked.size)
+        art.apply(listOf(entry), wait = 5.0) // a search right after: nothing asked
+        assertEquals(1, http.asked.size)
+        now += BoxArt.FETCH_RETRY + 1
+        art.apply(listOf(entry), wait = 5.0)
+        assertEquals(2, http.asked.size)
     }
 }

@@ -23,7 +23,14 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -39,13 +46,28 @@ import io.github.uposum.romstore.formatBytes
 @Composable
 fun DownloadsTab(vm: AppViewModel) {
     val jobs by vm.downloads.collectAsStateWithLifecycle()
-    OnPad { if (it == PadButton.SELECT) vm.clearFinished(); true }
+    OnPad { if (it == PadButton.SELECT && vm.browser.value == null) vm.clearFinished(); true }
     if (jobs.isEmpty()) {
         EmptyState(Icons.Rounded.DownloadDone, "No downloads", "Games you download appear here with their progress.")
         return
     }
     val running = jobs.filter { it.active }
     val finished = jobs.filterNot { it.active }
+    // A removed row takes its focused button with it: focus goes to the row that takes its place.
+    val actions = remember { mutableMapOf<String, FocusRequester>() }
+    var refocus by remember { mutableStateOf<String?>(null) }
+    val order = running + finished
+    fun removing(ids: Set<String>) {
+        val at = order.indexOfFirst { it.id in ids }.takeIf { it >= 0 } ?: return
+        refocus = (order.drop(at + 1) + order.take(at).reversed()).firstOrNull { it.id !in ids }?.id
+    }
+    LaunchedEffect(refocus, jobs) {
+        val id = refocus ?: return@LaunchedEffect
+        if (jobs.none { it.id == id }) { refocus = null; return@LaunchedEffect }
+        withFrameNanos { }
+        runCatching { actions[id]?.requestFocus() }
+        refocus = null
+    }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 32.dp),
@@ -53,22 +75,22 @@ fun DownloadsTab(vm: AppViewModel) {
     ) {
         if (running.isNotEmpty()) {
             item { SectionTitle("Downloading", "${running.size}") }
-            items(running, key = { it.id }) { JobRow(vm, it) }
+            items(running, key = { it.id }) { JobRow(vm, it, actions.getOrPut(it.id) { FocusRequester() }) { removing(setOf(it.id)) } }
         }
         if (finished.isNotEmpty()) {
             item {
                 Spacer(Modifier.height(if (running.isNotEmpty()) 14.dp else 0.dp))
                 SectionTitle("Finished", "${finished.size}") {
-                    Btn("Clear", vm::clearFinished, kind = ButtonKind.Ghost, icon = Icons.Rounded.DeleteSweep)
+                    Btn("Clear", { removing(finished.map { it.id }.toSet()); vm.clearFinished() }, kind = ButtonKind.Ghost, icon = Icons.Rounded.DeleteSweep)
                 }
             }
-            items(finished, key = { it.id }) { JobRow(vm, it) }
+            items(finished, key = { it.id }) { JobRow(vm, it, actions.getOrPut(it.id) { FocusRequester() }) { removing(setOf(it.id)) } }
         }
     }
 }
 
 @Composable
-private fun JobRow(vm: AppViewModel, job: DownloadJob) {
+private fun JobRow(vm: AppViewModel, job: DownloadJob, action: FocusRequester, onRemoving: () -> Unit) {
     val shape = RoundedCornerShape(14.dp)
     Row(
         Modifier.fillMaxWidth().background(C.surface, shape).padding(12.dp),
@@ -102,9 +124,10 @@ private fun JobRow(vm: AppViewModel, job: DownloadJob) {
             }
         }
         Spacer(Modifier.width(12.dp))
-        when {
-            job.active -> IconBtn(Icons.Rounded.Close, "Cancel", { vm.cancelDownload(job.id) })
-            job.status == JobStatus.ERROR || job.status == JobStatus.CANCELLED -> Row {
+        // The close button is one control throughout (Cancel while running, Remove after),
+        // so a download that stops under focus keeps focus on it.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (job.status == JobStatus.ERROR || job.status == JobStatus.CANCELLED) {
                 if (job.status == JobStatus.ERROR && !linkIsDead(job.error) && (job.pageUrl != null || job.error?.contains("browser check") == true)) {
                     // The link wanted a browser (a check, a file host's page): get it through the site's page.
                     Btn("Open site", { vm.openBrowser(job) }, kind = ButtonKind.Primary, icon = Icons.Rounded.Language)
@@ -112,9 +135,17 @@ private fun JobRow(vm: AppViewModel, job: DownloadJob) {
                 }
                 IconBtn(Icons.Rounded.Refresh, "Try again", { vm.retryDownload(job.id) })
                 Spacer(Modifier.width(8.dp))
-                IconBtn(Icons.Rounded.Close, "Remove", { vm.removeDownload(job.id) })
             }
-            else -> IconBtn(Icons.Rounded.Close, "Remove from list", { vm.removeDownload(job.id) })
+            IconBtn(
+                Icons.Rounded.Close,
+                when {
+                    job.active -> "Cancel"
+                    job.status == JobStatus.ERROR || job.status == JobStatus.CANCELLED -> "Remove"
+                    else -> "Remove from list"
+                },
+                { if (job.active) vm.cancelDownload(job.id) else { onRemoving(); vm.removeDownload(job.id) } },
+                Modifier.focusRequester(action),
+            )
         }
     }
 }

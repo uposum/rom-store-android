@@ -17,6 +17,7 @@
 -dontwarn com.github.junrar.**
 -keep class org.apache.commons.compress.archivers.sevenz.** { *; }
 -keep class com.github.junrar.** { *; }
+-keep class org.tukaani.xz.** { *; }
 -dontwarn okhttp3.internal.platform.**
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**

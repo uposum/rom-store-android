@@ -17,7 +17,8 @@ internal fun <T> writeJson(file: File?, serializer: KSerializer<T>, value: T) {
     file ?: return
     runCatching {
         file.parentFile?.mkdirs()
-        val temp = File(file.path + ".tmp")
+        // A temp file of its own: two writers of the same file must not share one.
+        val temp = File(file.path + "." + java.util.UUID.randomUUID() + ".tmp")
         temp.writeText(storeJson.encodeToString(serializer, value))
         if (!temp.renameTo(file)) {
             file.delete()

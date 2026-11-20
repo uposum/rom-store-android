@@ -30,8 +30,11 @@ class RetrosticSource(http: HttpClient, options: SourceOptions) : Source(http, o
 
     // ------------------------------------------------------------------ search
     override suspend fun search(query: String, limit: Int, page: Int): List<RomEntry> {
-        val url = "$base/search?search_term_string=${Html.quotePlus(query)}"
+        // The site's own pager: /search?currentpage=2&search_term_string=...
+        val url = if (page <= 1) "$base/search?search_term_string=${Html.quotePlus(query)}"
+        else "$base/search?currentpage=$page&search_term_string=${Html.quotePlus(query)}"
         val html = http.getText(url)
+        lastPageCount = maxOf(page, PAGE_RE.findAllFast(html).mapNotNull { it.groupValues[1].toIntOrNull() }.maxOrNull() ?: 1)
         return parseRows(html).take(limit)
     }
 
@@ -162,7 +165,8 @@ class RetrosticSource(http: HttpClient, options: SourceOptions) : Source(http, o
 
     // ------------------------------------------------------------------ details
     override suspend fun resolve(entry: RomEntry): List<RomFile> {
-        val html = http.getText(entry.url)
+        val page = http.request(entry.url)
+        val html = page.text
         val details = parseMeta(html)
         if (!details["File Name"].isNullOrEmpty()) {
             entry.size = entry.size?.takeIf { it != 0L } ?: Html.parseSize(details["File Size"])
@@ -182,7 +186,9 @@ class RetrosticSource(http: HttpClient, options: SourceOptions) : Source(http, o
 
         val (formAction, fields) = downloadForm(html) ?: return emptyList()
         if (fields.isEmpty()) return emptyList()
-        val action = Html.absolute(base, formAction)
+        // Against the page's own address: the site moves between example.com
+        // and www.example.com, and a redirected POST comes back as a GET.
+        val action = Html.absolute(page.url, formAction)
 
         val response = try {
             http.postForm(action, fields)
@@ -232,6 +238,7 @@ class RetrosticSource(http: HttpClient, options: SourceOptions) : Source(http, o
         private val ID_RE = Regex("""id="([^"]+)"""")
         private val ACTION_RE = Regex("""action="([^"]+)"""", I)
         private val NUMBER_RE = Regex("""${UNI}^([\d,]+)""")
+        private val PAGE_RE = Regex("[?&]currentpage=(\\d+)")
         private val DETAIL_IMG_RE = Regex("""<img[^>]*class="img-fluid"[^>]*src="(/img/[^"]+)"""", I)
 
         /** Console names as the site spells them -> canonical system key. */

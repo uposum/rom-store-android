@@ -42,7 +42,17 @@ class NswGameSource(http: HttpClient, options: SourceOptions) : Source(http, opt
         var page = 1
         while (entries.size < limit && page <= 3) {
             val url = if (page > 1) "$base/category/$category/page/$page/" else "$base/category/$category/"
-            val found = parseCards(runCatching { http.getText(url) }.getOrDefault("")).filter { it.system == system }
+            // The first page failing is the source failing (said so in the
+            // page's errors); a later one only ends the list early.
+            val html = try {
+                http.getText(url)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (page == 1) throw e
+                break
+            }
+            val found = parseCards(html).filter { it.system == system }
             if (found.isEmpty()) break
             entries += found.filter { f -> entries.none { it.url == f.url } }
             page++
@@ -95,6 +105,8 @@ class NswGameSource(http: HttpClient, options: SourceOptions) : Source(http, opt
                 if (label.isEmpty() || label.length > 80) return@forEachIndexed
                 val links = LINK.findAllFast(inner).map { Html.unescape(it.groupValues[1]) to Html.unescape(Html.stripTags(it.groupValues[2])).trim() }
                     .filter { (href, _) -> href.startsWith("http") && FileHosts.host(href).let { h -> h.isNotEmpty() && h != own && !h.endsWith(".$own") && "youtu" !in h } }
+                    // The app never offers torrents or magnet links.
+                    .filterNot { (href, text) -> TORRENT.containsMatchIn(href) || TORRENT.containsMatchIn(text) }
                     .toList()
                 if (links.isEmpty()) return@forEachIndexed
                 // Parts of one archive ("Part 1", "Part 2") are not offered.
@@ -131,6 +143,7 @@ class NswGameSource(http: HttpClient, options: SourceOptions) : Source(http, opt
         private val SPOILER_TITLE = Regex("""<div class="su-spoiler-title"[^>]*>(.*?)</div>""", RegexOption.DOT_MATCHES_ALL)
         private val PARAGRAPH = Regex("""<p>(.*?)</p>""", RegexOption.DOT_MATCHES_ALL)
         private val LINK = Regex("""<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+        private val TORRENT = Regex("""torrent|magnet|mgnet""", RegexOption.IGNORE_CASE)
         private val PART = Regex("""\bpart\s*\d""", RegexOption.IGNORE_CASE)
         private val PART_SUFFIX = Regex("""\.part\d+(?=\.rar$)""", RegexOption.IGNORE_CASE)
         private val FORMAT = Regex("""\b(NSP|XCI|NSZ|XCZ|WUA|WUX|CIA|3DS|NDS|ISO|WBFS|RVZ)\b""", RegexOption.IGNORE_CASE)

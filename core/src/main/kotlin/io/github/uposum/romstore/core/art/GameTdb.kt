@@ -127,9 +127,12 @@ class GameTdb(
         synchronized(building) {
             val running = building[platform]
             if (running != null && !running.isCompleted) return running
+            val started = clock()
+            listStarted[platform] = started
             val job = scope.launch { fetch(platform) }
+            // Done: no search counts its wait from this fetch any more.
+            job.invokeOnCompletion { listStarted.remove(platform, started) }
             building[platform] = job
-            listStarted[platform] = clock()
             return job
         }
     }
@@ -266,13 +269,14 @@ class GameTdb(
         if (wanted.isEmpty()) return
         val platforms = wanted.map { PLATFORMS.getValue(it.system) }.toSet()
         val missing = platforms.any { !index.containsKey(it) }
-        val pending = withContext(Dispatchers.IO) { platforms.mapNotNull { ensure(it) } }
+        val pendingBy = withContext(Dispatchers.IO) { platforms.mapNotNull { p -> ensure(p)?.let { p to it } } }
+        val pending = pendingBy.map { it.second }
         if (pending.isNotEmpty() && wait > 0) {
             // Without any list there is nothing to match against (and the search
             // result is cached for days): wait for it a little longer, counted
-            // from when the fetch started.
+            // from when the fetch started (only fetches still running count).
             val now = clock()
-            val started = platforms.minOf { listStarted[it]?.takeIf { at -> at != 0.0 } ?: now }
+            val started = pendingBy.minOf { (p, _) -> listStarted[p]?.takeIf { at -> at != 0.0 } ?: now }
             val waitList = (if (missing) maxOf(wait, listWait) else wait) - (now - started)
             if (waitList > 0) waitFor(pending, waitList)
         }

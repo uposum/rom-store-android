@@ -1,12 +1,22 @@
 package io.github.uposum.romstore
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -14,13 +24,16 @@ import io.github.uposum.romstore.ui.AppViewModel
 import io.github.uposum.romstore.ui.Pad
 import io.github.uposum.romstore.ui.RomStoreTheme
 import io.github.uposum.romstore.ui.Shell
-import io.github.uposum.romstore.ui.Tab
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
 
+    /** Android 13+: the download notification needs this; asked once, the first time a download runs. */
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     companion object {
         const val EXTRA_TAB = "tab"
+        private const val ASKED_NOTIFICATIONS = "askedNotifications"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,9 +45,27 @@ class MainActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        handle(intent)
+        // Not again after a recreation: the overlays opened since then stay.
+        if (savedInstanceState == null) handle(intent)
         setContent {
             RomStoreTheme { Shell(vm) }
+        }
+        askForNotificationsOnFirstDownload()
+    }
+
+    private fun askForNotificationsOnFirstDownload() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val prefs = getSharedPreferences("ui", MODE_PRIVATE)
+        if (prefs.getBoolean(ASKED_NOTIFICATIONS, false)) return
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.downloads.first { jobs -> jobs.any { it.active } }
+                if (prefs.getBoolean(ASKED_NOTIFICATIONS, false)) return@repeatOnLifecycle
+                prefs.edit().putBoolean(ASKED_NOTIFICATIONS, true).apply()
+                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    runCatching { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                }
+            }
         }
     }
 
@@ -44,7 +75,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handle(intent: Intent?) {
-        if (intent?.getStringExtra(EXTRA_TAB) == "downloads") vm.setTab(Tab.Downloads)
+        // From the download notification: the Downloads tab, over whatever was open.
+        if (intent?.getStringExtra(EXTRA_TAB) == "downloads") vm.showDownloads()
     }
 
     /**

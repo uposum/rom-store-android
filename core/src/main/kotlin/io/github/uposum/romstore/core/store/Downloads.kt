@@ -74,7 +74,10 @@ data class DownloadJob(
     val cleanBase: String? = null,
 ) {
     val active: Boolean get() = status == JobStatus.QUEUED || status == JobStatus.DOWNLOADING || status == JobStatus.EXTRACTING
-    val partName: String get() = Html.safeFilename(filename.ifEmpty { "$title.zip" }) + ".part"
+    /** Each job its own partial file: two downloads of one game must never write into the same one. */
+    val partName: String get() = Html.safeFilename(filename.ifEmpty { "$title.zip" }) + ".$id.part"
+    /** The name older versions used (one per file name), adopted when a job resumes. */
+    val legacyPartName: String get() = Html.safeFilename(filename.ifEmpty { "$title.zip" }) + ".part"
 }
 
 /**
@@ -94,6 +97,8 @@ class DownloadManager(
     private val jobs = ConcurrentHashMap<String, DownloadJob>()
     private val cancels = ConcurrentHashMap<String, AtomicBoolean>()
     private val tasks = ConcurrentHashMap<String, Job>()
+    private val calls = ConcurrentHashMap<String, okhttp3.Call>()
+    private val lock = Any()
     private var semaphore = Semaphore(maxConcurrent.coerceIn(1, 6))
     private val counter = AtomicInteger(0)
     private var suspending = false
@@ -126,41 +131,59 @@ class DownloadManager(
         val stored = runCatching { json.decodeFromString(ListSerializer(DownloadJob.serializer()), path.readText()) }.getOrNull() ?: return
         for (job in stored) {
             // A job that was running when the app stopped waits to be resumed.
-            val fixed = if (job.status == JobStatus.DOWNLOADING || job.status == JobStatus.EXTRACTING) {
-                job.copy(status = JobStatus.QUEUED, speed = 0.0)
-            } else job
+            val fixed = when {
+                // Downloaded and renamed, stopped while unpacking: never download it again.
+                job.status == JobStatus.EXTRACTING && job.path != null -> job.copy(
+                    status = JobStatus.DONE, speed = 0.0, finished = job.finished ?: System.currentTimeMillis(),
+                    error = "Downloaded, but not unpacked (the app closed while unpacking); unpack it from the Library",
+                )
+                job.status == JobStatus.DOWNLOADING || job.status == JobStatus.EXTRACTING -> job.copy(status = JobStatus.QUEUED, speed = 0.0)
+                else -> job
+            }
             jobs[job.id] = fixed
         }
         publish()
     }
 
+    // Jobs run on several threads: the list and the file are written under one lock,
+    // so a newer state is never replaced by an older one and the file is never mixed.
     private fun save(force: Boolean = false) {
         val path = statePath ?: return
-        val now = System.currentTimeMillis()
-        if (!force && now - savedAt < 2000) return
-        savedAt = now
-        runCatching {
-            path.parentFile?.mkdirs()
-            val temp = File(path.path + ".tmp")
-            temp.writeText(json.encodeToString(ListSerializer(DownloadJob.serializer()), jobs.values.toList()))
-            temp.renameTo(path)
+        synchronized(lock) {
+            val now = System.currentTimeMillis()
+            if (!force && now - savedAt < 2000) return
+            savedAt = now
+            runCatching {
+                path.parentFile?.mkdirs()
+                val temp = File(path.path + ".tmp")
+                temp.writeText(json.encodeToString(ListSerializer(DownloadJob.serializer()), jobs.values.toList()))
+                if (!temp.renameTo(path)) { path.delete(); temp.renameTo(path) }
+            }
         }
     }
 
     private fun publish() {
-        _state.value = jobs.values.sortedByDescending { it.created }
+        synchronized(lock) { _state.value = jobs.values.sortedByDescending { it.created } }
     }
 
     private fun update(id: String, force: Boolean = false, change: (DownloadJob) -> DownloadJob) {
-        jobs.computeIfPresent(id) { _, job -> change(job) }
-        publish()
+        synchronized(lock) {
+            jobs.computeIfPresent(id) { _, job -> change(job) }
+            publish()
+        }
         save(force)
     }
 
     fun get(id: String): DownloadJob? = jobs[id]
 
+    private var concurrent = maxConcurrent.coerceIn(1, 6)
+
+    /** A new limit for the next jobs; the same limit again (the settings flow at start) changes nothing. */
     fun setMaxConcurrent(value: Int) {
-        semaphore = Semaphore(value.coerceIn(1, 6))
+        val v = value.coerceIn(1, 6)
+        if (v == concurrent) return
+        concurrent = v
+        semaphore = Semaphore(v)
     }
 
     val hasActive: Boolean get() = jobs.values.any { it.active }
@@ -205,24 +228,38 @@ class DownloadManager(
         val job = jobs[id] ?: return false
         if (job.active) return false
         update(id, force = true) { it.copy(status = JobStatus.QUEUED, error = null, finished = null, speed = 0.0) }
+        // A run still stuck in a read from before the cancel ends first; it never writes again.
+        cancels[id]?.set(true)
+        calls.remove(id)?.cancel()
+        val old = tasks[id]
+        old?.cancel()
         cancels[id] = AtomicBoolean(false)
-        tasks[id] = scope.launch { run(id, resume = true) }
+        tasks[id] = scope.launch { old?.join(); run(id, resume = true) }
         return true
     }
 
     fun cancel(id: String): Boolean {
-        cancels[id]?.set(true)
+        val token = cancels[id]
+        token?.set(true)
         val job = jobs[id] ?: return false
         if (!job.active) return false
-        tasks[id]?.cancel()
+        calls.remove(id)?.cancel()
+        val task = tasks[id]
+        task?.cancel()
         update(id, force = true) { it.copy(status = JobStatus.CANCELLED, finished = System.currentTimeMillis(), speed = 0.0) }
-        scope.launch { removePart(job) }
+        // The partial file goes once the run has stopped, unless the job was started again meanwhile.
+        scope.launch {
+            task?.join()
+            if (cancels[id] === token && jobs[id]?.status == JobStatus.CANCELLED) removePart(job)
+        }
         return true
     }
 
     fun remove(id: String) {
         val job = jobs[id] ?: return
         if (job.active) cancel(id)
+        // A failed or cancelled download taken off the list leaves no partial file behind.
+        else if (job.status != JobStatus.DONE) scope.launch { removePart(job) }
         jobs.remove(id)
         publish()
         save(force = true)
@@ -259,7 +296,12 @@ class DownloadManager(
 
     private class NodeSink(val folder: FolderNode, val name: String) : DownloadSink {
         var node: FileNode? = folder.child(name)
-        override fun existingSize(): Long = node?.size ?: 0L
+        // Read again each time: a storage provider's node keeps the size it had when listed,
+        // and a second attempt must append where the file really ends.
+        override fun existingSize(): Long {
+            node = folder.child(name) ?: node
+            return node?.size ?: 0L
+        }
         override fun open(append: Boolean): java.io.OutputStream {
             val target = node ?: folder.createFile(name).also { node = it }
             return target.openWrite(append)
@@ -269,6 +311,12 @@ class DownloadManager(
 
     private suspend fun run(id: String, resume: Boolean) {
         val cancel = cancels.getOrPut(id) { AtomicBoolean(false) }
+        // This run speaks for the job only while its token is the job's token: a run left
+        // over from before a cancel and retry must not write over the new one's status.
+        fun owns() = cancels[id] === cancel
+        fun update(id: String, force: Boolean = false, change: (DownloadJob) -> DownloadJob) {
+            if (owns()) this.update(id, force, change)
+        }
         try {
             semaphore.withPermit {
                 if (cancel.get()) {
@@ -285,6 +333,10 @@ class DownloadManager(
                     url = resolve(job) { text -> update(id) { it.copy(note = text) } }
                     update(id, true) { it.copy(note = null) }
                 }
+                // A partial file from an older version (one name per file) is taken over.
+                if (resume && folder.child(job.partName) == null) {
+                    withContext(Dispatchers.IO) { folder.child(job.legacyPartName)?.rename(job.partName) }
+                }
                 val sink = NodeSink(folder, job.partName)
                 val resumedFrom = if (resume) sink.existingSize() else 0L
                 update(id) { it.copy(resumedFrom = resumedFrom) }
@@ -295,7 +347,7 @@ class DownloadManager(
                 var lastError: String? = null
                 for (attempt in 0 until 3) {
                     try {
-                        http.download(url, sink, job.headers, resume = resume || attempt > 0, cancel = cancel) { received, total ->
+                        http.download(url, sink, job.headers, resume = resume || attempt > 0, cancel = cancel, onCall = { calls[id] = it }) { received, total ->
                             val now = System.nanoTime()
                             val elapsed = (now - last) / 1e9
                             val speed = if (elapsed >= 0.5) (received - lastBytes) / elapsed else null
@@ -310,14 +362,15 @@ class DownloadManager(
                     } catch (e: HttpError) {
                         lastError = e.message
                         if (cancel.get()) throw e
-                        if (!e.retry) break
                         if (resume && e.status in setOf(401, 403, 404, 410)) {
                             lastError = "The download link has expired. Start it again from the game page."
                             break
                         }
+                        if (!e.retry) break
                         if (attempt < 2) delay(1000L * (attempt + 1))
                     }
                 }
+                calls.remove(id)
                 if (lastError != null) throw HttpError(lastError)
                 val transferSeconds = (System.nanoTime() - started) / 1e9
                 if (cancel.get()) {
@@ -333,13 +386,15 @@ class DownloadManager(
                     val taken = folder.list().map { it.name }.toSet()
                     part.rename(freeName(wanted, taken)) ?: throw HttpError("Could not rename the downloaded file")
                 }
-                update(id, true) { it.copy(path = finalNode.name, received = finalNode.size, total = if (it.total > 0) it.total else finalNode.size, speed = 0.0) }
+                val downloaded = finalNode.size
+                update(id, true) { it.copy(path = finalNode.name, received = downloaded, total = if (it.total > 0) it.total else downloaded, speed = 0.0) }
                 var current = jobs[id] ?: return
                 if (current.extract && Unpack.archiveExt(finalNode.name) != null) {
                     update(id, true) { it.copy(status = JobStatus.EXTRACTING, received = 0) }
                     try {
                         val produced = runInterruptible(Dispatchers.IO) {
-                            Unpack.unpack(
+                            // One unpack at a time, after a collection: a 7z may need most of the app's memory.
+                            synchronized(Unpack.lock) { System.gc(); Unpack.unpack(
                                 finalNode, folder, scratch, { cancel.get() },
                                 onProgress = { written ->
                                     val now = System.nanoTime()
@@ -349,7 +404,7 @@ class DownloadManager(
                                     }
                                 },
                                 route = { name -> router?.invoke(current, folder, name) ?: folder },
-                            )
+                            ) }
                         }
                         var main = Unpack.mainFile(produced)
                         // One game file from the archive: it gets the clean name too (never over another file).
@@ -368,28 +423,40 @@ class DownloadManager(
                             update(id, true) { it.copy(path = main.name) }
                         }
                     } catch (e: Unpack.UnpackError) {
+                        // Cancelled while unpacking: it stays cancelled (the archive is kept).
+                        if (cancel.get()) return
                         update(id, true) { it.copy(error = "Downloaded, but not unpacked: ${e.message}") }
                     }
                 }
-                update(id, true) { it.copy(status = JobStatus.DONE, finished = System.currentTimeMillis(), speed = 0.0) }
+                if (cancel.get() || !owns()) return
+                // Finished: "received" is what came over the network, not what was unpacked.
+                update(id, true) { it.copy(status = JobStatus.DONE, finished = System.currentTimeMillis(), speed = 0.0, received = downloaded) }
                 current = jobs[id] ?: return
-                runCatching { onMeasure?.invoke(current, maxOf(0L, current.received - current.resumedFrom), transferSeconds) }
+                runCatching { onMeasure?.invoke(current, maxOf(0L, downloaded - current.resumedFrom), transferSeconds) }
                 runCatching { onDone?.invoke(current) }
             }
         } catch (e: CancellationException) {
+            calls.remove(id)
             if (suspending && jobs[id]?.status != JobStatus.CANCELLED) {
                 update(id, true) { it.copy(status = JobStatus.QUEUED, speed = 0.0) }
             } else if (jobs[id]?.status != JobStatus.CANCELLED) {
                 update(id, true) { it.copy(status = JobStatus.CANCELLED, finished = System.currentTimeMillis(), speed = 0.0) }
             }
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Anything a job throws ends that job, never the app (an OutOfMemoryError
+            // unpacking a huge 7z used to take the whole app down at the end of a download).
+            if (e is CancellationException) throw e
             if (suspending) {
                 update(id, true) { it.copy(status = JobStatus.QUEUED, speed = 0.0) }
                 return
             }
             if (jobs[id]?.status == JobStatus.CANCELLED) return
-            val message = if (e is HttpError) e.message else "${e.javaClass.simpleName}: ${e.message}"
+            val message = when (e) {
+                is HttpError -> e.message
+                is OutOfMemoryError -> "Not enough memory for this file: ${e.message ?: "out of memory"}"
+                else -> "${e.javaClass.simpleName}: ${e.message}"
+            }
             update(id, true) { it.copy(status = JobStatus.ERROR, error = message, finished = System.currentTimeMillis(), speed = 0.0, note = null) }
             // The partial file stays so "Try again" can continue it.
         }

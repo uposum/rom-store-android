@@ -49,6 +49,21 @@ class IgdbCoversTest {
     }
 
     @Test
+    fun theMatchComesBeforeTheMetadata() {
+        val metroid = list("""[
+            {"id": 1, "name": "Metroid Prime", "rating": 90, "videos": [{"video_id": "abcdefghijk"}], "screenshots": [{"image_id": "s"}], "summary": "x"},
+            {"id": 2, "name": "Metroid"}
+        ]""")
+        assertEquals("the same name beats a richer longer one", "2", IgdbCovers.bestGame(metroid, "Metroid")!!["id"].toString())
+        assertNull("whole words: \"art\" is not in \"mario kart\"", IgdbCovers.bestGame(list("""[{"name": "Art"}]"""), "Mario Kart"))
+        assertNull("whole words: \"mario kart\" does not start \"mario karting\"", IgdbCovers.bestGame(list("""[{"name": "Mario Karting"}]"""), "Mario Kart"))
+        assertEquals(
+            "a longer name with the whole title still matches", "3",
+            IgdbCovers.bestGame(list("""[{"id": 3, "name": "Mario Kart 8 Deluxe"}]"""), "Mario Kart")!!["id"].toString(),
+        )
+    }
+
+    @Test
     fun infoFromTheBestGame() {
         val info = IgdbCovers.info(IgdbCovers.bestGame(list(games), "super mario odyssey")!!)!!
         assertEquals("https://images.igdb.com/igdb/image/upload/t_cover_big/co1abc.jpg", info.cover)

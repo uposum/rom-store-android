@@ -57,7 +57,7 @@ abstract class Source(val http: HttpClient, val options: SourceOptions) {
     ): List<RomEntry> {
         val entries = mutableListOf<RomEntry>()
         val seen = HashSet<String>()
-        val host = base.substringAfter("://").substringBefore('/')
+        val host = hostOf(base)
         var page = 1
         while (page <= maxPages && entries.size < limit) {
             val batch = (page until minOf(page + parallel, maxPages + 1)).toList()
@@ -66,7 +66,7 @@ abstract class Source(val http: HttpClient, val options: SourceOptions) {
                     async {
                         runCatching {
                             val r = http.request(pageUrl(n))
-                            if (n > 1 && r.url.substringAfter("://").substringBefore('/') != host) emptyList() else parse(r.text)
+                            if (n > 1 && hostOf(r.url) != host) emptyList() else parse(r.text)
                         }.getOrElse { e -> if (e is kotlinx.coroutines.CancellationException) throw e; if (n == 1) throw e; emptyList() }
                     }
                 }.awaitAll()
@@ -81,5 +81,12 @@ abstract class Source(val http: HttpClient, val options: SourceOptions) {
             page += parallel
         }
         return entries.take(limit)
+    }
+
+    companion object {
+        /** A URL's host, lowercased, without a leading "www." (sites redirect
+         * between the two: the same site either way). */
+        fun hostOf(url: String): String =
+            url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase().removePrefix("www.")
     }
 }

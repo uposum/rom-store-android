@@ -40,6 +40,9 @@ private val EXTENSIONS = setOf(
     "nes", "sfc", "smc", "z64", "n64", "v64", "nds", "3ds", "cia", "md", "gen", "sms", "gg", "32x", "pbp", "cso",
     "rvz", "wbfs", "wua", "m3u", "pce", "ws", "wsc", "ngp", "ngc", "vb", "min", "a26", "a78", "lnx", "col", "int",
     "vec", "adf", "d64", "dsk", "st", "png",
+    // Disc and console formats the library holds too ("Game.nsz" is the game "Game").
+    "nsz", "xcz", "gdi", "cdi", "img", "ccd", "sub", "mds", "mdf", "pkg", "vpk", "wux", "gcz", "ciso", "wad",
+    "rpx", "dol", "elf", "tzx", "tap", "z80", "sna", "prg", "t64", "crt", "atr", "xex", "jag", "j64", "lha", "iso9660",
 )
 private val FILLER = setOf("the", "a", "an", "of", "and", "version", "edition")
 

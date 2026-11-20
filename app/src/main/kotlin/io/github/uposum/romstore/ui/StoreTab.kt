@@ -22,7 +22,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -83,7 +82,7 @@ private fun HomeView(vm: AppViewModel, onSetup: () -> Unit) {
     val consoles by vm.consoles.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val installed by vm.installed.collectAsStateWithLifecycle()
-    val pickLibrary = rememberFolderPicker { vm.setLibraryFolder(it) }
+    val pickLibrary = rememberFolderPicker(vm.messages::tryEmit) { vm.setLibraryFolder(it) }
     val noSources = settings.configuredSources.isEmpty()
 
     val dense = LocalDense.current
@@ -228,7 +227,10 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
         vm.focused.value = null
         onDispose { vm.focused.value = null }
     }
-    val grid = rememberLazyGridState()
+    // A new search or console starts at the top, so the first card is there to take focus.
+    val grid = androidx.compose.runtime.saveable.rememberSaveable(r.query, r.system, r.browse, saver = androidx.compose.foundation.lazy.grid.LazyGridState.Saver) {
+        androidx.compose.foundation.lazy.grid.LazyGridState()
+    }
     val scope = rememberCoroutineScope()
     val firstCard = remember { androidx.compose.ui.focus.FocusRequester() }
     val keys = androidx.compose.ui.platform.LocalInputModeManager.current.inputMode == androidx.compose.ui.input.InputMode.Keyboard
@@ -240,12 +242,14 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
         }
     }
 
-    // Load the next page when the end comes into view.
+    // Load the next page when the end comes into view (the count as it is now, not when this started).
+    val count by androidx.compose.runtime.rememberUpdatedState(shown.size)
     LaunchedEffect(grid, r.query) {
         snapshotFlow { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
-            .collect { last -> if (last >= shown.size - 8) vm.loadMore() }
+            .collect { last -> if (last >= count - 8) vm.loadMore() }
     }
     OnPad { button ->
+        if (vm.browser.value != null || vm.game.value != null) return@OnPad true
         when (button) {
             PadButton.R2 -> scope.launch { grid.animateScrollToItem((grid.firstVisibleItemIndex + 24).coerceAtMost(maxOf(0, shown.size - 1))) }
             PadButton.L2 -> scope.launch { grid.animateScrollToItem((grid.firstVisibleItemIndex - 24).coerceAtLeast(0)) }

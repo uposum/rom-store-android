@@ -43,6 +43,10 @@ class BoxArt(
     private val index = ConcurrentHashMap<String, Map<String, List<String>>>()
     private val loadedAt = ConcurrentHashMap<String, Double>()
     private val building = HashMap<String, Job>()
+    // When a console's index last failed to come (GitHub down, its 60 requests
+    // an hour used up, no such repository): not asked again for FETCH_RETRY
+    // seconds, so one failing console does not spend the budget on every search.
+    private val failedAt = ConcurrentHashMap<String, Double>()
 
     internal var clock: () -> Double = ::nowSeconds
 
@@ -67,17 +71,18 @@ class BoxArt(
 
     private suspend fun fetch(system: String) {
         val playlist = SYSTEMS[system] ?: return
-        orNull {
+        val ok = orNull {
             // libretro's own server stopped listing (Nov 2026: every folder 404); the
             // scans live in one GitHub repository per console. Two requests: the
             // root tree for the Named_Boxarts folder, then that folder's files.
             val api = "$GITHUB_API/${repo(playlist)}/git/trees"
             val headers = mapOf("Accept" to "application/vnd.github+json")
-            val root = http.request("$api/master", headers = headers, polite = false).text
-            val sha = treeSha(root, "Named_Boxarts") ?: return@orNull
+            // HEAD: the default branch, "master" for most consoles, "main" for some (Sharp X1, Atari 8-bit).
+            val root = http.request("$api/HEAD", headers = headers, polite = false).text
+            val sha = treeSha(root, "Named_Boxarts") ?: return@orNull false
             val folder = http.request("$api/$sha", headers = headers, polite = false, maxBytes = 24 * 1024 * 1024).text
             val names = treeNames(folder).sorted()
-            if (names.isEmpty()) return@orNull
+            if (names.isEmpty()) return@orNull false
             index[system] = group(names)
             val now = clock()
             loadedAt[system] = now
@@ -91,13 +96,16 @@ class BoxArt(
                     ),
                 ),
             )
-        }
+            true
+        } == true
+        if (ok) failedAt.remove(system) else failedAt[system] = clock()
     }
 
     /** Start building a console's index if it is missing or stale. */
     private fun ensure(system: String): Job? {
         if (system !in SYSTEMS) return null
         if (index.containsKey(system) && clock() - (loadedAt[system] ?: 0.0) < INDEX_TTL) return null
+        failedAt[system]?.let { if (clock() - it < FETCH_RETRY) return null }
         synchronized(building) {
             val running = building[system]
             if (running != null && !running.isCompleted) return running
@@ -203,6 +211,8 @@ class BoxArt(
         }.getOrDefault(emptySet())
         const val RESIZER = "https://wsrv.nl/"
         const val INDEX_TTL = 14 * 24 * 60 * 60.0
+        /** Seconds before a console whose index failed to come is asked for again. */
+        const val FETCH_RETRY = 30 * 60.0
 
         /** Bumped when the cached index needs building again (2: link files left out). */
         const val INDEX_VERSION = 2
@@ -316,7 +326,7 @@ class BoxArt(
         }
 
         fun fullUrl(systemName: String, filename: String): String =
-            "$BASE/${repo(systemName)}/master/Named_Boxarts/${Html.quote(filename)}"
+            "$BASE/${repo(systemName)}/HEAD/Named_Boxarts/${Html.quote(filename)}"
 
         /** A small WebP of a scan, through the resizing proxy. */
         fun thumbUrl(url: String, width: Int = 320): String {

@@ -242,42 +242,50 @@ class IgdbCovers(
         }
 
         /**
-         * The entry that is really the game we are looking for. IGDB often
-         * returns several entries with the same name: a bare one and a richer
-         * collection/bundle entry that carries the rating, the trailer and more
-         * screenshots. Prefer the entry with the most data.
+         * The entry that is really the game we are looking for. How well the
+         * name matches decides first (the same name, then a name that starts
+         * with it, contains it, is part of it, shares most words; whole words
+         * only, so "art" is not in "Mario Kart"). IGDB often has several
+         * entries with the same name, a bare one and a richer one that carries
+         * the rating, the trailer and more screenshots: within one match level
+         * the entry with the most data wins.
          */
         fun bestGame(games: List<JsonObject>, queryTitle: String): JsonObject? {
             val wanted = clean(queryTitle)
+            if (wanted.isEmpty()) return null
+            val wantedWords = wanted.split(" ").filter { it.isNotEmpty() }
             var best: JsonObject? = null
-            var bestScore = 0.0
+            var bestTier = 0.0
+            var bestData = 0.0
             for (game in games) {
                 val name = clean(game.string("name"))
                 if (name.isEmpty()) continue
-                var score = when {
-                    name == wanted -> 4.0
-                    name.startsWith(wanted) -> 3.0
-                    wanted in name -> 2.0
-                    name in wanted -> 1.5
+                val tier = when {
+                    name == wanted -> 5.0
+                    name.startsWith("$wanted ") -> 4.0
+                    " $wanted " in " $name " -> 3.0
+                    " $name " in " $wanted " -> 2.0
                     else -> {
-                        val words = wanted.split(" ").filter { it.isNotEmpty() }.toSet()
+                        val words = wantedWords.toSet()
                         val overlap = (words intersect name.split(" ").filter { it.isNotEmpty() }.toSet()).size
                         if (overlap == 0 || words.size < 2) continue
                         val ratio = overlap.toDouble() / words.size
                         if (ratio < 0.75) continue
-                        ratio
+                        ratio // below every tier above
                     }
                 }
-                // Prefer the entry that actually carries the metadata.
-                if (truthy(game["rating"]) || truthy(game["total_rating"]) || truthy(game["aggregated_rating"])) score += 1.2
-                if (truthy(game["videos"])) score += 1.2
-                if (truthy(game["screenshots"])) score += 0.3
-                if (truthy(game["cover"])) score += 0.2
-                if (truthy(game["summary"])) score += 0.2
+                // Within a tier: the entry that actually carries the metadata.
+                var data = 0.0
+                if (truthy(game["rating"]) || truthy(game["total_rating"]) || truthy(game["aggregated_rating"])) data += 1.2
+                if (truthy(game["videos"])) data += 1.2
+                if (truthy(game["screenshots"])) data += 0.3
+                if (truthy(game["cover"])) data += 0.2
+                if (truthy(game["summary"])) data += 0.2
                 // Prefer the plain game over a bundle or a DLC.
-                if (truthy(game["involved_companies"])) score += 0.1
-                if (score > bestScore) {
-                    bestScore = score
+                if (truthy(game["involved_companies"])) data += 0.1
+                if (tier > bestTier || (tier == bestTier && data > bestData)) {
+                    bestTier = tier
+                    bestData = data
                     best = game
                 }
             }

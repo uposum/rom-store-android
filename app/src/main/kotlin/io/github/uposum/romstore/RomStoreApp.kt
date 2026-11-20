@@ -29,7 +29,11 @@ class RomStoreApp : Application(), SingletonImageLoader.Factory {
         private set
     lateinit var library: SafLibrary
         private set
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** Background work: a failure is logged, never a crash of the whole app. */
+    val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, e -> android.util.Log.e("RomStore", "background job failed", e) },
+    )
 
     override fun onCreate() {
         super.onCreate()

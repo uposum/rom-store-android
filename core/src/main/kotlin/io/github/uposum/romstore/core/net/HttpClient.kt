@@ -349,6 +349,8 @@ open class HttpClient(
         headers: Map<String, String> = emptyMap(),
         resume: Boolean = false,
         cancel: AtomicBoolean = AtomicBoolean(false),
+        /** The HTTP call, so a cancel can stop a transfer stuck in a read. */
+        onCall: (okhttp3.Call) -> Unit = {},
         onProgress: (received: Long, total: Long) -> Unit = { _, _ -> },
     ): Long = withContext(Dispatchers.IO) {
         val host = host(url)
@@ -361,6 +363,8 @@ open class HttpClient(
         }
         val ownCookies = hdrs.keys.any { it.equals("Cookie", ignoreCase = true) }
         val call = (if (ownCookies) downloadClientOwnCookies else downloadClient).newCall(build(url, "GET", null, hdrs))
+        onCall(call)
+        if (cancel.get()) call.cancel()
         val response = try {
             call.execute()
         } catch (e: UnknownHostException) {

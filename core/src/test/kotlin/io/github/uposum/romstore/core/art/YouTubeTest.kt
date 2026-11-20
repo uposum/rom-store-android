@@ -39,4 +39,40 @@ class YouTubeTest {
         assertNull(YouTube(down).trailer("Tetris 99"))
         assertNull(YouTube(down).trailer(""))
     }
+
+    // Trimmed from a live search page (Nov 2026): every result carries several
+    // "videoId"s (thumbnail, watch endpoint, menu), so ids and titles cannot be
+    // paired across the page.
+    private val rendererPage = """{"itemSectionRenderer":{"contents":[""" +
+        """{"videoRenderer":{"videoId":"xQI2hWQQCyc","thumbnail":{"thumbnails":[{"url":"https://i.ytimg.com/vi/xQI2hWQQCyc/hq720.jpg"}]},""" +
+        """"title":{"runs":[{"text":"God of War: Ghost of Sparta - Story Trailer"}]},""" +
+        """"navigationEndpoint":{"watchEndpoint":{"videoId":"xQI2hWQQCyc"}},"menu":{"videoId":"xQI2hWQQCyc"}}},""" +
+        """{"videoRenderer":{"videoId":"Zz9ZPU8NmOk","thumbnail":{},"title":{"runs":[{"text":"Ghost of Sparta Gameplay"}]},""" +
+        """"navigationEndpoint":{"watchEndpoint":{"videoId":"Zz9ZPU8NmOk"}}}}]}}"""
+
+    // The newer layout: a lockup per result, the id only in the thumbnail.
+    private val lockupPage = """[""" +
+        """{"lockupViewModel":{"contentImage":{"collectionThumbnailViewModel":{"primaryThumbnail":{"thumbnailViewModel":{"image":{"sources":[{"url":"https://i.ytimg.com/vi/4_l_Va5YwbM/hq720.jpg"}]}}}}},""" +
+        """"metadata":{"lockupMetadataViewModel":{"title":{"content":"God Of War: Ghost Of Sparta - Trailer & Gameplay"}}},""" +
+        """"contentId":"PLA7704F432243D9C0","contentType":"LOCKUP_CONTENT_TYPE_PLAYLIST"}},""" +
+        """{"lockupViewModel":{"contentImage":{"thumbnailViewModel":{"image":{"sources":[{"url":"https://i.ytimg.com/vi/aaaaaaaaaaa/hq720.jpg"}]}}},""" +
+        """"metadata":{"lockupMetadataViewModel":{"title":{"content":"Ghost of Sparta speedrun"}}},""" +
+        """"contentId":"aaaaaaaaaaa","contentType":"LOCKUP_CONTENT_TYPE_VIDEO"}},""" +
+        """{"lockupViewModel":{"contentImage":{"thumbnailViewModel":{"image":{"sources":[{"url":"https://i.ytimg.com/vi/bbbbbbbbbbb/hq720.jpg"}]}}},""" +
+        """"metadata":{"lockupMetadataViewModel":{"title":{"content":"God of War: Ghost of Sparta & Chains of Olympus - Launch Trailer"}}},""" +
+        """"contentId":"bbbbbbbbbbb","contentType":"LOCKUP_CONTENT_TYPE_VIDEO"}}]"""
+
+    @Test
+    fun eachResultKeepsItsOwnTitle() {
+        assertEquals(
+            listOf("xQI2hWQQCyc" to "God of War: Ghost of Sparta - Story Trailer", "Zz9ZPU8NmOk" to "Ghost of Sparta Gameplay"),
+            YouTube.results(rendererPage),
+        )
+        assertEquals("xQI2hWQQCyc", YouTube.pick(rendererPage, "God of War: Ghost of Sparta")!!.id)
+
+        assertEquals(listOf("aaaaaaaaaaa", "bbbbbbbbbbb"), YouTube.results(lockupPage).map { it.first })
+        val trailer = YouTube.pick(lockupPage, "God of War: Ghost of Sparta")!!
+        assertEquals("a playlist is not a video", "bbbbbbbbbbb", trailer.id)
+        assertEquals("God of War: Ghost of Sparta & Chains of Olympus - Launch Trailer", trailer.name)
+    }
 }

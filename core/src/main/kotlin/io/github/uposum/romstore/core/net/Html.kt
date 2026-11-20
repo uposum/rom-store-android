@@ -49,13 +49,18 @@ object Html {
             val body = m.groupValues[1]
             when {
                 body.startsWith("#x") || body.startsWith("#X") ->
-                    body.substring(2).toIntOrNull(16)?.let { String(Character.toChars(it)) } ?: m.value
+                    codePoint(body.substring(2).toLongOrNull(16) ?: Long.MAX_VALUE)
                 body.startsWith("#") ->
-                    body.substring(1).toIntOrNull()?.let { String(Character.toChars(it)) } ?: m.value
+                    codePoint(body.substring(1).toLongOrNull() ?: Long.MAX_VALUE)
                 else -> NAMED[body] ?: m.value
             }
         }
     }
+
+    /** A numeric reference's character; like html.unescape, one that is no
+     * character (a surrogate, past U+10FFFF) becomes U+FFFD instead of throwing. */
+    private fun codePoint(cp: Long): String =
+        if (cp < 0 || cp > 0x10FFFF || cp in 0xD800L..0xDFFFL) "\uFFFD" else String(Character.toChars(cp.toInt()))
 
     fun parseAttrs(raw: String?): Map<String, String> {
         val attrs = LinkedHashMap<String, String>()
@@ -154,14 +159,68 @@ object Html {
     }
 
     /** (openTag, blockHtml) for every balanced element of `tag`; `needle`
-     * filters on the opening tag only, e.g. 'class="single-rom"'. */
+     * filters on the opening tag only, e.g. 'class="single-rom"'.
+     *
+     * Same result as running [findMatchingClose] from the end of every
+     * `<tag ...>` (in page order), in one forward pass over the page with one
+     * open and one close Matcher: a running level counts every `<tag` (+1)
+     * and `</tag>` (-1); an element whose opening tag ends at E closes at the
+     * first `</tag>` after E that brings the level to (level at E) - 1. */
     fun blocks(html: String, tag: String = "div", needle: String? = null): Sequence<Pair<String, String>> = sequence {
-        val pattern = Regex("<${Regex.escape(tag)}\\b[^>]*>", RegexOption.IGNORE_CASE)
-        for (m in pattern.findAllFast(html)) {
-            if (needle != null && needle !in m.value) continue
-            val end = findMatchingClose(html, tag, m.range.last + 1)
-            if (end == -1) continue
-            yield(m.value to html.substring(m.range.first, end))
+        val open = Regex("<${Regex.escape(tag)}\\b", RegexOption.IGNORE_CASE).toPattern().matcher(html)
+        val close = Regex("</${Regex.escape(tag)}\\s*>", RegexOption.IGNORE_CASE).toPattern().matcher(html)
+        val openLen = tag.length + 1
+        var openAt = if (open.find()) open.start() else -1
+        var closeAt = -1; var closeEnd = -1
+        if (close.find()) { closeAt = close.start(); closeEnd = close.end() }
+
+        class Block(val start: Int, val tagEnd: Int) { var end = -2 } // -2: open, -1: never closed
+        val found = ArrayList<Block>()      // in page order, emitted from `emitted` on
+        var emitted = 0
+        val notYet = ArrayDeque<Block>()    // opening tag not passed yet
+        val waiting = HashMap<Int, MutableList<Block>>() // level that closes them
+        var level = 0
+        var tagFloor = 0                    // `<tag ...>` matches never overlap
+        var noMoreTags = false
+
+        fun register(upTo: Int) {
+            while (notYet.isNotEmpty() && notYet.first().tagEnd <= upTo) {
+                waiting.getOrPut(level - 1) { mutableListOf() } += notYet.removeFirst()
+            }
+        }
+
+        while (openAt >= 0 || closeAt >= 0) {
+            if (openAt >= 0 && (closeAt < 0 || openAt < closeAt)) {
+                register(openAt)
+                level += 1
+                if (!noMoreTags && openAt >= tagFloor) {
+                    val gt = html.indexOf('>', openAt + openLen)
+                    if (gt < 0) {
+                        noMoreTags = true
+                    } else {
+                        tagFloor = gt + 1
+                        if (needle == null || needle in html.substring(openAt, tagFloor)) {
+                            val b = Block(openAt, tagFloor)
+                            found += b
+                            notYet.addLast(b)
+                        }
+                    }
+                }
+                openAt = if (open.find()) open.start() else -1
+            } else {
+                register(closeAt)
+                level -= 1
+                waiting.remove(level)?.forEach { it.end = closeEnd }
+                if (close.find()) { closeAt = close.start(); closeEnd = close.end() } else { closeAt = -1; closeEnd = -1 }
+                while (emitted < found.size && found[emitted].end >= 0) {
+                    val b = found[emitted++]
+                    yield(html.substring(b.start, b.tagEnd) to html.substring(b.start, b.end))
+                }
+            }
+        }
+        while (emitted < found.size) {
+            val b = found[emitted++]
+            if (b.end >= 0) yield(html.substring(b.start, b.tagEnd) to html.substring(b.start, b.end))
         }
     }
 

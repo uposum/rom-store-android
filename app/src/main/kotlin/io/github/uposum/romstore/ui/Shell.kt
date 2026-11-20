@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,6 +45,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
@@ -71,9 +73,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.uposum.romstore.R
 import kotlinx.coroutines.launch
 
-/** Picks a folder with the system picker and keeps access to it. */
+/**
+ * Picks a folder with the system picker and keeps access to it. A folder whose
+ * access Android would not let the app keep is not used (it would stop working
+ * after a restart); a device without a folder picker says so.
+ */
 @Composable
-fun rememberFolderPicker(onPicked: (Uri) -> Unit): () -> Unit {
+fun rememberFolderPicker(onMessage: (String) -> Unit, onPicked: (Uri) -> Unit): () -> Unit {
     val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -81,11 +87,14 @@ fun rememberFolderPicker(onPicked: (Uri) -> Unit): () -> Unit {
                 context.contentResolver.takePersistableUriPermission(
                     uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                 )
-            }
-            onPicked(uri)
+            }.onSuccess { onPicked(uri) }
+                .onFailure { onMessage("Android didn't let ROM Store keep access to that folder. Pick another one.") }
         }
     }
-    return { launcher.launch(null) }
+    return {
+        runCatching { launcher.launch(null) }
+            .onFailure { onMessage("This device has no folder picker (the Files app may be disabled).") }
+    }
 }
 
 /** The whole app: top bar with the tabs and search, the open tab, overlays. */
@@ -96,6 +105,7 @@ fun Shell(vm: AppViewModel) {
     val game by vm.game.collectAsStateWithLifecycle()
     val libraryGame by vm.libraryGame.collectAsStateWithLifecycle()
     val jobs by vm.downloads.collectAsStateWithLifecycle()
+    val browser by vm.browser.collectAsStateWithLifecycle()
     val gamepad = rememberGamepad()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -116,6 +126,8 @@ fun Shell(vm: AppViewModel) {
     }
 
     OnPad { button ->
+        // The in-app browser is the top layer: the screens under it take no buttons.
+        if (browser != null) return@OnPad true
         val overlay = game != null || libraryGame != null
         when (button) {
             PadButton.L1 -> if (game != null) vm.stepGame(-1) else if (!overlay) vm.stepTab(-1)
@@ -132,7 +144,8 @@ fun Shell(vm: AppViewModel) {
 
     val active = jobs.count { it.active }
     Box(Modifier.fillMaxSize().background(C.bg)) {
-        Column(Modifier.fillMaxSize()) {
+        // The keyboard pushes the content up (adjustResize; edge to edge, so as padding).
+        Column(Modifier.fillMaxSize().imePadding()) {
             TopBar(vm, tab, active, jobs.filter { it.active }, gamepad)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (tab) {
@@ -163,7 +176,6 @@ fun Shell(vm: AppViewModel) {
         AnimatedVisibility(visible = libraryGame != null, enter = fadeIn(), exit = fadeOut()) {
             libraryGame?.let { LibraryGamePage(vm, it, gamepad) }
         }
-        val browser by vm.browser.collectAsStateWithLifecycle()
         browser?.let { request ->
             BrowserDownload(request, onFile = { vm.browserFile(request, it) }, onClose = vm::closeBrowser)
         }
@@ -262,14 +274,30 @@ private fun SearchField(vm: AppViewModel, modifier: Modifier) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val shape = RoundedCornerShape(22.dp)
+    /** Set when an edit is closed without moving on: focus goes back to the field's button. */
+    var refocus by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { vm.focusSearch.collect { editing = true } }
     LaunchedEffect(editing) {
         if (editing) {
             runCatching { requester.requestFocus() }
             keyboard?.show()
+        } else if (refocus) {
+            refocus = false
+            withFrameNanos { }
+            runCatching { requester.requestFocus() }
         }
     }
+
+    /** Close the keyboard and keep the query (B, Escape). */
+    fun stopEditing() {
+        editing = false
+        hadFocus = false
+        refocus = true
+        keyboard?.hide()
+    }
+    // B while typing closes the keyboard; it must not leave the results (or the app).
+    BackHandler(enabled = editing) { stopEditing() }
 
     fun submit() {
         editing = false
@@ -281,6 +309,8 @@ private fun SearchField(vm: AppViewModel, modifier: Modifier) {
 
     Row(
         modifier.height(if (LocalDense.current) 32.dp else 44.dp)
+            // On the row, so it finds the button when not editing and the field when editing.
+            .focusRequester(requester)
             .then(if (!editing) Modifier.pressable(shape = shape) { editing = true } else Modifier)
             .background(C.surface, shape)
             .padding(horizontal = 14.dp),
@@ -298,7 +328,7 @@ private fun SearchField(vm: AppViewModel, modifier: Modifier) {
                     cursorBrush = SolidColor(C.accent),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { submit() }, onDone = { submit() }),
-                    modifier = Modifier.fillMaxWidth().focusRequester(requester)
+                    modifier = Modifier.fillMaxWidth()
                         .onFocusChanged {
                             if (it.isFocused) hadFocus = true else if (hadFocus && editing) { editing = false; hadFocus = false }
                         }
@@ -307,7 +337,7 @@ private fun SearchField(vm: AppViewModel, modifier: Modifier) {
                             when (it.key) {
                                 Key.DirectionDown -> { editing = false; keyboard?.hide(); focus.moveFocus(FocusDirection.Down); true }
                                 Key.Enter, Key.NumPadEnter -> { submit(); true }
-                                Key.Escape, Key.Back -> { editing = false; keyboard?.hide(); true }
+                                Key.Escape, Key.Back -> { stopEditing(); true }
                                 else -> false
                             }
                         },

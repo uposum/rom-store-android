@@ -75,16 +75,32 @@ object FocusMemory {
         last = target
         target?.let { runCatching { it.requestFocus() } }
     }
+
+    /** Open overlays, the top one last: only the top one holds focus in. */
+    private val traps = ArrayList<Any>()
+
+    fun open(trap: Any) { traps.add(trap) }
+    fun close(trap: Any) { traps.remove(trap) }
+    fun isTop(trap: Any) = traps.lastOrNull() === trap
 }
 
-/** Keep focus inside an overlay while it is open, and give it back afterwards. */
+/**
+ * Keep focus inside an overlay while it is open, and give it back afterwards.
+ * An overlay opened over it (the in-app browser over the game page) takes
+ * focus away from it: only the top one keeps focus in.
+ */
 @Composable
 fun Modifier.trapFocus(): Modifier {
+    val trap = remember { Any() }
     DisposableEffect(Unit) {
         FocusMemory.push()
-        onDispose { FocusMemory.pop() }
+        FocusMemory.open(trap)
+        onDispose {
+            FocusMemory.close(trap)
+            FocusMemory.pop()
+        }
     }
-    return this.focusGroup().focusProperties { onExit = { cancelFocusChange() } }
+    return this.focusGroup().focusProperties { onExit = { if (FocusMemory.isTop(trap)) cancelFocusChange() } }
 }
 
 /** Buttons the app handles globally (the shell decides what they do). */
