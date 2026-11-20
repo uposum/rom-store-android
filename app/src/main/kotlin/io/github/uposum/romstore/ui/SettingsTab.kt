@@ -293,6 +293,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.artworkPane(vm: AppVi
         PaneTitle("Artwork", "Covers come from libretro-thumbnails' box scans first (real proportions, right platform), GameTDB for Nintendo's newer consoles, then the site, SteamGridDB, and IGDB.")
         val s by vm.settings.collectAsStateWithLifecycle()
         Card {
+            ToggleRow(
+                "Uniform covers",
+                "SteamGridDB's covers first, all in one 2:3 shape. Off: real box scans first, in each console's own box shape.",
+                s.coverStyle == "uniform",
+            ) { on -> vm.updateSettings { it.copy(coverStyle = if (on) "uniform" else "box") } }
             ToggleRow("Box scans from libretro-thumbnails", null, s.libretroBoxart) { on -> vm.updateSettings { it.copy(libretroBoxart = on) } }
             Divider()
             ToggleRow("Small covers through wsrv.nl", "Resizes box scans for the grid (about 25 kB each instead of a full scan).", s.boxartResize) { on -> vm.updateSettings { it.copy(boxartResize = on) } }

@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Folder
@@ -271,7 +272,8 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
                 Spacer(Modifier.width(10.dp))
                 val shape = RoundedCornerShape(8.dp)
                 Row(
-                    Modifier.pressable(shape = shape) { vm.messages.tryEmit(errorText(r.errors)) }
+                    // Says why, and asks the failed sources again (a paused one included).
+                    Modifier.pressable(shape = shape) { vm.messages.tryEmit(errorText(r.errors) + " · asking again…"); vm.retrySources() }
                         .background(C.surface, shape).padding(horizontal = 8.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -313,6 +315,9 @@ private fun ResultsView(vm: AppViewModel, r: Results, gamepad: Boolean) {
                         r.all.isEmpty() -> "Try another spelling, or fewer words."
                         else -> "Change the filters above to see the other ${r.all.size}."
                     },
+                    action = if (r.errors.isNotEmpty() && r.all.isEmpty()) ({
+                        Btn("Try again", vm::retrySources, kind = ButtonKind.Primary, icon = Icons.Rounded.Refresh)
+                    }) else null,
                 )
                 else -> LazyVerticalGrid(
                     state = grid,

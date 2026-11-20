@@ -30,6 +30,8 @@ data class StoreSettings(
     val maxConcurrent: Int = 2,
     /** Updates and DLC go into updates/ and dlc/ inside the console folder, not next to the games. */
     val addonFolders: Boolean = true,
+    /** Save downloads under the game's clean name ("Name Update 4.0.1 [TitleID][v…].nsp"). */
+    val cleanFileNames: Boolean = true,
     val resultsPerSource: Int = 30,
     val searchCacheHours: Double = 72.0,
     /** IGDB crops every cover to 3:4, so its art only fills in games without one unless this is on. */
@@ -40,6 +42,8 @@ data class StoreSettings(
     val libretroBoxart: Boolean = true,
     val boxartResize: Boolean = true,
     val steamgriddbApiKey: String = "",
+    /** "box": real box scans first (each console's own shape); "uniform": SteamGridDB's 2:3 covers first. */
+    val coverStyle: String = "box",
     val showTitles: Boolean = false,
 ) {
     fun address(id: String): String = SourceDefs.normalizeAddress(sourceAddresses[id])

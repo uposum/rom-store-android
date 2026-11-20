@@ -37,8 +37,7 @@ class RetrosticSource(http: HttpClient, options: SourceOptions) : Source(http, o
 
     override suspend fun browse(system: String, limit: Int): List<RomEntry> {
         val slug = slugFor(system) ?: return emptyList()
-        val html = http.getText("$base/roms/$slug")
-        return parseRows(html).take(limit)
+        return pagedCatalogue({ n -> if (n == 1) "$base/roms/$slug" else "$base/roms/$slug/page/$n" }, limit, maxPages = 6) { parseRows(it) }
     }
 
     override fun browseSystems(): Set<String> =

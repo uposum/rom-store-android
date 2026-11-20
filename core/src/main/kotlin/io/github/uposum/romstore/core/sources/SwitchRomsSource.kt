@@ -44,31 +44,10 @@ class SwitchRomsSource(http: HttpClient, options: SourceOptions) : Source(http, 
         // A Switch-only catalogue: browsing any other console would fetch a
         // dozen pages only for the store to filter every result out again.
         if (system != "switch") return emptyList()
-        val entries = mutableListOf<RomEntry>()
-        val seen = HashSet<String>()
-        for (page in 1 until 13) {
-            val url = if (page == 1) "$base/" else "$base/page/$page/"
-            val html = try {
-                http.getText(url)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                break
-            }
-            val found = parseCards(html)
-            if (found.isEmpty()) break
-            var added = 0
-            for (entry in found) {
-                if (entry.url in seen) continue
-                seen += entry.url
-                entry.rank = entries.size
-                entries += entry
-                added += 1
-            }
-            if (added == 0 || entries.size >= limit) break
-        }
-        return entries.take(limit)
+        // The site is slow (about 1.7 s a page): four pages at a time.
+        return pagedCatalogue({ n -> if (n == 1) "$base/" else "$base/page/$n/" }, limit, maxPages = 12, parallel = 4) { parseCards(it) }
     }
+
 
     /** Parse the card grid used on the catalogue page. */
     private fun parseCards(html: String): List<RomEntry> {

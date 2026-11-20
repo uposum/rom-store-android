@@ -141,3 +141,33 @@ the application id: installed copies could not update.
   the file itself (`extra.fileNamed`, the Internet Archive) or the title holds
   the ID, so "0100152000022800.nsp" groups as "<game> Update". A site's post
   keeps its own name.
+- **Names are cleaned before anything else** (`TitleClean.display`, in
+  `StoreService.cleanTitles`): serials, tags, site names and file extensions
+  go, "+ Update"/"(DLC)" stay; the site's own is in `extra.rawTitle`. A matched
+  libretro scan then gives the official name (`BoxArt.name`, "_" read as "&").
+  Covers, IGDB and SteamGridDB are all looked up by these names. Searches keep
+  only results whose title matches the query (`Relevance`): WordPress sites
+  search whole pages.
+- **Cover order** (`StoreArtwork`): box scan (libretro, GameTDB) → SteamGridDB
+  → IGDB → the site's own picture (often a banner or a wide thumbnail; put
+  aside as `extra.siteCover` and only given back by `finish`). **Covers are
+  flat front art only**: sources whose pictures are not (RomsFun's 3D case
+  renders, Retrostic/RomsDL wide thumbnails, Switch ROMs banners, NSWGame's
+  framed covers) never give a cover (`SourceDefs.flatCovers`), and `Cover`
+  refuses their hosts even in saved shelves and downloads (`notACover`); a
+  game without flat art shows its title tile. Setting `coverStyle = "uniform"`
+  puts SteamGridDB first. Covers that arrive late are shown by
+  `refreshCovers` a few seconds after a page appears.
+- **libretro box art comes from GitHub** (`libretro-thumbnails/<Console_Name>`
+  repositories: two tree requests per console, cached two weeks;
+  thumbnails.libretro.com stopped listing in Nov 2026). GitHub allows 60
+  unauthenticated API requests an hour per IP.
+- **A failing source is said so**: one paused after three failures shows in the
+  page's errors (never an empty console page without a reason), "load more"
+  past a site's last page never counts as a failure, an answer with a failed
+  source is not cached, and the app asks every source again at start.
+- **Downloads are saved under clean names** (`FileNames`, setting
+  `cleanFileNames`): "<Game> [Update 4.0.1|DLC] (Region) [TitleID][vN].ext";
+  a single game file unpacked from an archive gets the same name; disc sets
+  (.cue/.bin, .gdi, .m3u) keep theirs.
+

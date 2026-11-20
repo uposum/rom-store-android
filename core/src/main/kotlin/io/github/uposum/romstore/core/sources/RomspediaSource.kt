@@ -42,8 +42,7 @@ class RomspediaSource(http: HttpClient, options: SourceOptions) : Source(http, o
 
     override suspend fun browse(system: String, limit: Int): List<RomEntry> {
         val slug = slugFor(system) ?: return emptyList()
-        val html = http.getText("$base/roms/$slug")
-        return parseCards(html).take(limit)
+        return pagedCatalogue({ n -> if (n == 1) "$base/roms/$slug" else "$base/roms/$slug/page/$n" }, limit, maxPages = 4) { parseCards(it) }
     }
 
     /** The console sections this site actually has, straight from /roms:

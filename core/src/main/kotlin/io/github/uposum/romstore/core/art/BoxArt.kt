@@ -68,11 +68,15 @@ class BoxArt(
     private suspend fun fetch(system: String) {
         val playlist = SYSTEMS[system] ?: return
         orNull {
-            // One plain directory listing per console (PS1: ~2.5 MB, 9000 names).
-            val resp = http.request(
-                "$BASE/${Html.quote(playlist)}/Named_Boxarts/", polite = false, maxBytes = 24 * 1024 * 1024,
-            )
-            val names = scanNames(resp.text).sorted()
+            // libretro's own server stopped listing (Nov 2026: every folder 404); the
+            // scans live in one GitHub repository per console. Two requests: the
+            // root tree for the Named_Boxarts folder, then that folder's files.
+            val api = "$GITHUB_API/${repo(playlist)}/git/trees"
+            val headers = mapOf("Accept" to "application/vnd.github+json")
+            val root = http.request("$api/master", headers = headers, polite = false).text
+            val sha = treeSha(root, "Named_Boxarts") ?: return@orNull
+            val folder = http.request("$api/$sha", headers = headers, polite = false, maxBytes = 24 * 1024 * 1024).text
+            val names = treeNames(folder).sorted()
             if (names.isEmpty()) return@orNull
             index[system] = group(names)
             val now = clock()
@@ -127,7 +131,8 @@ class BoxArt(
         val names = index[system]?.get(matchTitle(title))
         if (names.isNullOrEmpty()) return null
         val best = names.minWithOrNull(scoreComparator(extractRegion(title))) ?: return null
-        val bare = TAG_STRIP_RE.replace(stripPng(best), "").trim()
+        // libretro writes characters a file name cannot hold as "_": "Ratchet _ Clank" is "Ratchet & Clank".
+        val bare = TAG_STRIP_RE.replace(stripPng(best), "").trim().replace(" _ ", " & ").replace("_", " ")
         // libretro writes "Title, The" and ":" as " - ".
         return ARTICLE_RE.replace(bare, "$2 $1").ifEmpty { null }
     }
@@ -168,7 +173,34 @@ class BoxArt(
     }
 
     companion object {
-        const val BASE = "https://thumbnails.libretro.com"
+        const val BASE = "https://raw.githubusercontent.com/libretro-thumbnails"
+        const val GITHUB_API = "https://api.github.com/repos/libretro-thumbnails"
+
+        /** "Sony - PlayStation Portable" → "Sony_-_PlayStation_Portable", the repository's name. */
+        fun repo(playlist: String): String = playlist.replace(' ', '_')
+
+        private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }
+
+        /** The sha of a folder in a GitHub tree listing. */
+        fun treeSha(listing: String, folder: String): String? = runCatching {
+            val tree = (json.parseToJsonElement(listing) as JsonObject)["tree"] as JsonArray
+            tree.mapNotNull { it as? JsonObject }.firstOrNull { (it["path"] as? JsonPrimitive)?.contentOrNull == folder && (it["type"] as? JsonPrimitive)?.contentOrNull == "tree" }
+                ?.let { (it["sha"] as? JsonPrimitive)?.contentOrNull }
+        }.getOrNull()
+
+        /**
+         * The scans in a Named_Boxarts tree, without links: libretro keeps a
+         * duplicate name as a git symlink (mode 120000, a few bytes), which is
+         * not an image; the scan it points to is listed under its own name.
+         */
+        fun treeNames(listing: String): Set<String> = runCatching {
+            val tree = (json.parseToJsonElement(listing) as JsonObject)["tree"] as JsonArray
+            tree.mapNotNull { it as? JsonObject }.filter { e ->
+                (e["type"] as? JsonPrimitive)?.contentOrNull == "blob" &&
+                    (e["mode"] as? JsonPrimitive)?.contentOrNull != "120000" &&
+                    ((e["size"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull() ?: 0L) >= 1024
+            }.mapNotNull { (it["path"] as? JsonPrimitive)?.contentOrNull }.filter { it.lowercase().endsWith(".png") }.toSet()
+        }.getOrDefault(emptySet())
         const val RESIZER = "https://wsrv.nl/"
         const val INDEX_TTL = 14 * 24 * 60 * 60.0
 
@@ -284,7 +316,7 @@ class BoxArt(
         }
 
         fun fullUrl(systemName: String, filename: String): String =
-            "$BASE/${Html.quote(systemName)}/Named_Boxarts/${Html.quote(filename)}"
+            "$BASE/${repo(systemName)}/master/Named_Boxarts/${Html.quote(filename)}"
 
         /** A small WebP of a scan, through the resizing proxy. */
         fun thumbUrl(url: String, width: Int = 320): String {

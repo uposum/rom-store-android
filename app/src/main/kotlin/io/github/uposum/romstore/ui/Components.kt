@@ -93,6 +93,8 @@ fun Cover(
     /** "card" picks a small variant of known image hosts, "detail" the full one. */
     kind: String = if (big) "detail" else "card",
 ) {
+    // Pictures that are not flat covers (3D cases, banners), even when saved earlier: the title tile instead.
+    val url = url?.takeUnless { io.github.uposum.romstore.core.sources.SourceDefs.notACover(it) }
     val context = LocalContext.current
     val candidates = remember(url) {
         if (url == null) emptyList() else listOf(url) + runCatching { RomStoreApp.instance.store.artwork.alternatives(url) }.getOrDefault(emptyList())

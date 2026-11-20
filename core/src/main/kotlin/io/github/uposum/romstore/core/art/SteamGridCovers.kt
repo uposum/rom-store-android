@@ -167,7 +167,7 @@ class SteamGridCovers(
     }
 
     private suspend fun lookupMany(titles: List<String>) {
-        val semaphore = Semaphore(4)
+        val semaphore = Semaphore(8)
         try {
             supervisorScope {
                 for (title in titles) {

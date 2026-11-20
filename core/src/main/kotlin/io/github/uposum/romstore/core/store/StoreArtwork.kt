@@ -1,4 +1,4 @@
-package io.github.uposum.romstore
+package io.github.uposum.romstore.core.store
 
 import io.github.uposum.romstore.core.art.ArtKeys
 import io.github.uposum.romstore.core.art.BoxArt
@@ -15,12 +15,12 @@ import io.github.uposum.romstore.core.model.GameMedia
 import io.github.uposum.romstore.core.model.LibraryGame
 import io.github.uposum.romstore.core.model.MergedRom
 import io.github.uposum.romstore.core.model.RomEntry
+import io.github.uposum.romstore.core.sources.SourceDefs
 import io.github.uposum.romstore.core.model.flag
 import io.github.uposum.romstore.core.model.matchTitle
 import io.github.uposum.romstore.core.model.putStr
+import io.github.uposum.romstore.core.model.str
 import io.github.uposum.romstore.core.net.HttpClient
-import io.github.uposum.romstore.core.store.Artwork
-import io.github.uposum.romstore.core.store.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeoutOrNull
@@ -35,7 +35,7 @@ import java.util.Locale
  * site's cover, then SteamGridDB, then IGDB (which crops to 3:4, so it only
  * fills gaps unless the user asks for it).
  */
-class AppArtwork(
+class StoreArtwork(
     http: HttpClient,
     cacheDir: File,
     private val settings: SettingsStore,
@@ -59,33 +59,108 @@ class AppArtwork(
 
     override fun titleName(titleId: String): String? = runCatching { switchTitles.name(titleId) }.getOrNull()
 
+    private val uniform get() = s.coverStyle == "uniform"
+
+    /**
+     * Covers, in this order: a real box scan (libretro, GameTDB), SteamGridDB,
+     * IGDB, and only then the site's own picture (often a banner, a
+     * screenshot or a stretched thumbnail). With uniform covers SteamGridDB
+     * comes first, the scans after it. The site's picture is put aside here
+     * and given back by `finish` to games that got nothing better.
+     */
     override suspend fun applyBoxart(entries: List<RomEntry>) {
+        for (e in entries) {
+            // Not a flat cover (3D case renders, banners, wide thumbnails): never shown as one.
+            if (!SourceDefs.flatCovers(e.source) && !e.extra.flag("boxart") && !e.extra.flag("gametdb") && e.cover != null && e.extra.str("siteCover") == null) {
+                e.extra.putStr("sitePicture", e.cover!!)
+                e.cover = null
+                e.coverFull = null
+                continue
+            }
+            val site = e.extra.str("siteCover")
+            if (site == null && e.cover != null && !e.extra.flag("boxart") && !e.extra.flag("gametdb")) {
+                e.extra.putStr("siteCover", e.cover!!)
+                (e.coverFull ?: e.cover)?.let { e.extra.putStr("siteCoverFull", it) }
+                e.cover = null
+                e.coverFull = null
+            } else if (site != null && e.cover == site) {
+                e.cover = null
+                e.coverFull = null
+            }
+        }
         if (!s.libretroBoxart) return
         runCatching { boxart.apply(entries, resize = s.boxartResize) }
         gametdb.proxy = s.boxartResize
         val rest = entries.filter { it.system in GameTdb.PLATFORMS && it.system != "switch" && !it.extra.flag("boxart") }
         if (rest.isNotEmpty()) runCatching { gametdb.apply(rest) }
+        // The scan's name is the game's real name ("Ratchet & Clank - Size Matters" for "Ratchet Clank - Size Matters").
+        for (e in entries) {
+            if (!e.extra.flag("boxart")) continue
+            runCatching { boxart.name(e.title, e.system) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { e.title = it }
+        }
+        if (uniform) holdScans(entries)
+    }
+
+    /** Uniform covers: scans wait until SteamGridDB has had its turn. */
+    private fun holdScans(entries: List<RomEntry>) {
+        for (e in entries) {
+            val c = e.cover ?: continue
+            if (!e.extra.flag("boxart") && !e.extra.flag("gametdb")) continue
+            e.extra.putStr("scanCover", c)
+            (e.coverFull ?: c).let { e.extra.putStr("scanCoverFull", it) }
+            e.cover = null
+            e.coverFull = null
+        }
+    }
+
+    /** Games still without a cover get the scan held back, else the site's own picture. */
+    private fun finish(entries: List<RomEntry>) {
+        for (e in entries) {
+            if (e.cover != null) continue
+            val scan = e.extra.str("scanCover")
+            val site = e.extra.str("siteCover")
+            when {
+                scan != null -> { e.cover = scan; e.coverFull = e.extra.str("scanCoverFull") ?: scan }
+                site != null -> { e.cover = site; e.coverFull = e.extra.str("siteCoverFull") ?: site }
+            }
+        }
+    }
+
+    /** IGDB for games still without a cover: cached answers, and a few new lookups within the time given. */
+    private suspend fun igdbCovers(entries: List<RomEntry>, waitMs: Long) {
+        if (!igdbOn) return
+        val wanted = mutableListOf<String>()
+        for (e in entries) {
+            if (e.cover != null) continue
+            val info = igdb.cached(e.title)
+            if (info?.cover != null) { e.cover = info.cover; e.coverFull = e.coverFull ?: info.cover }
+            else if (info == null && e.title !in wanted && e.system !in setOf("arcades", "mame")) wanted += e.title
+        }
+        if (wanted.isEmpty()) return
+        val job = scope.async { igdb.lookupMany(wanted.take(20), limit = 20) }
+        withTimeoutOrNull(waitMs) { job.await() }?.let { found ->
+            for (e in entries) if (e.cover == null) found[e.title]?.cover?.let { e.cover = it; e.coverFull = e.coverFull ?: it }
+        }
     }
 
     override suspend fun switchCovers(entries: List<RomEntry>) {
         val switch = entries.filter { it.system == "switch" }
         if (switch.isEmpty()) return
-        val before = switch.associateWith { it.cover }
         gametdb.proxy = s.boxartResize
         runCatching { gametdb.apply(switch) }
+        if (uniform) holdScans(switch)
         var missing = mutableListOf<RomEntry>()
         for (entry in switch) {
-            if (entry.extra.flag("gametdb")) continue
-            entry.cover = before[entry]
-            val cover = entry.cover
-            if (cover != null && "static.romspedia.com" in cover) continue // resized box art
-            if (cover != null) entry.extra.putStr("banner", cover)
-            entry.cover = null
-            entry.coverFull = null
-            missing += entry
+            // Switch ROMs' pictures are wide banners: never a cover, not even the last one.
+            if (entry.source == "switchroms") entry.extra.str("siteCover")?.let { banner ->
+                entry.extra.putStr("banner", banner)
+                entry.extra.remove("siteCover")
+                entry.extra.remove("siteCoverFull")
+            }
+            if (entry.cover == null) missing += entry
         }
         if (missing.isNotEmpty()) {
-            runCatching { sgdb.apply(missing) }
+            runCatching { sgdb.apply(missing, wait = 2.5, budget = 64) }
             missing = missing.filter { it.cover == null }.toMutableList()
         }
         if (missing.isEmpty() || !igdbOn) return
@@ -100,7 +175,15 @@ class AppArtwork(
     }
 
     override suspend fun enrich(roms: List<MergedRom>) {
-        runCatching { sgdb.apply(roms.flatMap { it.entries }) }
+        try {
+            enrichCovers(roms)
+        } finally {
+            finish(roms.flatMap { it.entries })
+        }
+    }
+
+    private suspend fun enrichCovers(roms: List<MergedRom>) {
+        runCatching { sgdb.apply(roms.flatMap { it.entries }, wait = 2.5, budget = 64) }
         if (!igdbOn) return
         val replace = s.igdbReplaceCovers
         val wanted = mutableListOf<String>()
@@ -132,7 +215,12 @@ class AppArtwork(
     }
 
     override suspend fun fillMissing(entries: List<RomEntry>) {
-        runCatching { sgdb.apply(entries) }
+        try {
+            runCatching { sgdb.apply(entries, wait = 2.5, budget = 64) }
+            runCatching { igdbCovers(entries, 1500) }
+        } finally {
+            finish(entries)
+        }
     }
 
     override suspend fun library(games: List<LibraryGame>, knownCovers: Map<String, String>) {

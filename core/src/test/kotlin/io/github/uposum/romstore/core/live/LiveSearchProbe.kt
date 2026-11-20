@@ -184,4 +184,44 @@ class LiveSearchProbe {
         val link = runCatching { io.github.uposum.romstore.core.net.FileHosts.resolve(http, late.url) { println("     note: $it") } }
         println("   1fichier: " + (link.getOrNull() ?: link.exceptionOrNull()?.message))
     }
+
+    /** The whole store as the app runs it: every reader at its own address, the cover rules, merging. */
+    @Test
+    fun storeProbe(): Unit = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val dir = java.io.File(System.getProperty("java.io.tmpdir"), "romstore-probe").apply { mkdirs() }
+        val settings = io.github.uposum.romstore.core.store.SettingsStore(java.io.File(dir, "s.json"))
+        settings.update { it.copy(sourceAddresses = SourceDefs.ALL.associate { d -> d.id to d.homepage }) }
+        val store = io.github.uposum.romstore.core.store.StoreService(settings, java.io.File(dir, "data"), java.io.File(dir, "cache"), library = { null })
+        store.artwork = io.github.uposum.romstore.core.store.StoreArtwork(store.http, java.io.File(dir, "art"), settings, store.scope)
+        store.onTiming = { println("   TIMING $it") }
+        if (System.getProperty("fresh") == "1") java.io.File(dir, "art").deleteRecursively()
+        val what = System.getProperty("q") ?: "search:ratchet"
+        for (job in what.split(";")) {
+            val (kind, arg) = job.split(":", limit = 2)
+            val r = if (kind == "browse") store.browse(arg) else store.search(arg)
+            println("== $job: ${r.results.size} results, errors=${r.errors}")
+            for (rom in r.results) {
+                val c = rom.cover
+                println("  ${rom.system.padEnd(8)} | ${rom.title.take(60).padEnd(60)} | ${rom.entries.joinToString(",") { it.source }} | ${if (c == null) "NO COVER" else c.substringAfter("//").substringBefore("/")} ")
+            }
+        }
+    }
+
+    @Test
+    fun browseTimes(): Unit = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val system = System.getProperty("q") ?: "switch"
+        for (def in SourceDefs.ALL) {
+            val src = SourceDefs.build(def.id, HttpClient(), def.homepage) ?: continue
+            if (!src.supportsBrowse || system !in src.browseSystems()) continue
+            val t = System.nanoTime()
+            val r = runCatching { src.browse(system, 200) }
+            val ms = (System.nanoTime() - t) / 1_000_000
+            val list = r.getOrDefault(emptyList())
+            val covers = list.mapNotNull { it.cover?.substringAfter("//")?.substringBefore("/") }.groupingBy { it }.eachCount()
+            println("   BROWSE ${def.id}: ${list.size} games in $ms ms ${r.exceptionOrNull()?.message ?: ""} covers=$covers")
+            list.mapNotNull { it.cover }.take(6).forEach { println("   COVER ${def.id} $it") }
+        }
+    }
 }

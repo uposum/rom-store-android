@@ -1,5 +1,7 @@
 package io.github.uposum.romstore.ui
 
+import io.github.uposum.romstore.core.model.str
+
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
@@ -187,6 +189,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 android.util.Log.e("RomStore", "search failed", e)
                 _results.update { it?.copy(loading = false, errors = mapOf("store" to (e.message ?: "Search failed"))) }
             }
+            result.getOrNull()?.let { laterCovers(it.results) }
         }
     }
 
@@ -216,7 +219,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val r = runCatching { store.browse(system) }
             r.onSuccess { res -> _results.update { it?.copy(loading = false, all = res.results, errors = res.errors) } }
                 .onFailure { e -> if (e !is kotlinx.coroutines.CancellationException) _results.update { it?.copy(loading = false, errors = mapOf("store" to (e.message ?: "Failed"))) } }
+            r.getOrNull()?.let { laterCovers(it.results) }
         }
+    }
+
+    /** Covers still being looked up when the page came: shown as they arrive. */
+    private suspend fun laterCovers(roms: List<io.github.uposum.romstore.core.model.MergedRom>) {
+        if (roms.none { it.cover == null || it.entries.any { e -> e.extra.str("siteCover") == e.cover && e.cover != null } }) return
+        for (wait in listOf(4_000L, 10_000L)) {
+            kotlinx.coroutines.delay(wait)
+            if (runCatching { store.refreshCovers(roms) }.getOrDefault(false)) {
+                _results.update { now -> now?.copy(all = now.all.map { it.copy() }) }
+            }
+        }
+    }
+
+    /** Ask paused sources again and load the same page again. */
+    fun retrySources() {
+        store.wakeAll()
+        val r = _results.value ?: return
+        if (r.browse && r.system != null) browse(r.system) else search(r.query, r.system)
     }
 
     fun goHome() {

@@ -70,6 +70,8 @@ data class DownloadJob(
     val resolveLate: Boolean = false,
     /** What the job is doing before bytes flow ("Waiting for 1fichier… 42 s"). */
     val note: String? = null,
+    /** The game's clean name: a single game file unpacked from the archive is renamed to it. */
+    val cleanBase: String? = null,
 ) {
     val active: Boolean get() = status == JobStatus.QUEUED || status == JobStatus.DOWNLOADING || status == JobStatus.EXTRACTING
     val partName: String get() = Html.safeFilename(filename.ifEmpty { "$title.zip" }) + ".part"
@@ -180,14 +182,14 @@ class DownloadManager(
         title: String, system: String, source: String, filename: String, url: String,
         destination: String, headers: Map<String, String> = emptyMap(), extract: Boolean = false,
         keepArchive: Boolean = true, prepareSeconds: Double = 0.0, cover: String? = null, folderLabel: String? = null,
-        pageUrl: String? = null, resolveLate: Boolean = false,
+        pageUrl: String? = null, resolveLate: Boolean = false, cleanBase: String? = null,
     ): DownloadJob {
         val id = "dl-${System.currentTimeMillis() / 1000}-${counter.incrementAndGet()}"
         val job = DownloadJob(
             id = id, title = title, system = system, source = source, filename = filename, url = url,
             destination = destination, headers = headers, extract = extract, keepArchive = keepArchive,
             prepareSeconds = prepareSeconds, cover = cover, folderLabel = folderLabel, pageUrl = pageUrl,
-            resolveLate = resolveLate,
+            resolveLate = resolveLate, cleanBase = cleanBase,
         )
         jobs[id] = job
         cancels[id] = AtomicBoolean(false)
@@ -349,7 +351,17 @@ class DownloadManager(
                                 route = { name -> router?.invoke(current, folder, name) ?: folder },
                             )
                         }
-                        val main = Unpack.mainFile(produced)
+                        var main = Unpack.mainFile(produced)
+                        // One game file from the archive: it gets the clean name too (never over another file).
+                        val clean = current.cleanBase
+                        if (clean != null && produced.size == 1 && main != null) {
+                            val wantedName = io.github.uposum.romstore.core.model.FileNames.rename(main.name, clean, current.system)
+                            if (wantedName != main.name) {
+                                val parent = runCatching { router?.invoke(current, folder, main.name) ?: folder }.getOrDefault(folder)
+                                val taken = runCatching { parent.list().map { it.name }.toSet() }.getOrDefault(emptySet())
+                                if (wantedName !in taken) withContext(Dispatchers.IO) { main?.rename(wantedName) }?.let { main = it }
+                            }
+                        }
                         update(id, true) { it.copy(extractedTo = main?.name) }
                         if (main != null && !current.keepArchive) {
                             withContext(Dispatchers.IO) { finalNode.delete() }

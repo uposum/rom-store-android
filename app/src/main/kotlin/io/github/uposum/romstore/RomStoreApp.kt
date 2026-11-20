@@ -47,8 +47,10 @@ class RomStoreApp : Application(), SingletonImageLoader.Factory {
         )
         store.onError = { where, e -> android.util.Log.w("RomStore", where, e) }
         store.onTiming = { android.util.Log.i("RomStore", it) }
-        store.artwork = AppArtwork(http, File(cacheDir, "art"), settings, scope)
+        store.artwork = io.github.uposum.romstore.core.store.StoreArtwork(http, File(cacheDir, "art"), settings, scope)
         store.start()
+        // A fresh start asks every source again: a pause from the last session must not hide a console.
+        store.wakeAll()
 
         // Keep a foreground service up while something downloads, so Android
         // does not stop the app halfway through a big disc image.

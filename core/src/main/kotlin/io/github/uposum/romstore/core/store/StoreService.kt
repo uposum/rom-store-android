@@ -3,6 +3,11 @@ package io.github.uposum.romstore.core.store
 import io.github.uposum.romstore.core.model.Dedupe
 import io.github.uposum.romstore.core.model.ContentKind
 import io.github.uposum.romstore.core.model.Content
+import io.github.uposum.romstore.core.model.str
+import io.github.uposum.romstore.core.model.extractRegion
+import io.github.uposum.romstore.core.model.Relevance
+import io.github.uposum.romstore.core.model.TitleClean
+import io.github.uposum.romstore.core.model.FileNames
 import io.github.uposum.romstore.core.model.flag
 import io.github.uposum.romstore.core.model.GameMedia
 import io.github.uposum.romstore.core.model.LibraryGame
@@ -164,7 +169,7 @@ class StoreService(
         const val REST_MS = 15 * 60 * 1000L
         const val SPEED_TEST_EVERY = 7 * 24 * 3600 * 1000L
         /** Bumped when cached results would show outdated covers. */
-        const val CACHE_REVISION = 3
+        const val CACHE_REVISION = 6
 
         private fun sha1(text: String): String =
             MessageDigest.getInstance("SHA-1").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
@@ -285,7 +290,7 @@ class StoreService(
         if (pageNo == 1) lastPageCount = 1
 
         val cacheKey = sha1(
-            "${query.lowercase()}|${system ?: "all"}|${sources.map { "${it.id}@${it.base}" }.sorted().joinToString(",").ifEmpty { "all" }}|$sort|$pageNo",
+            "${query.lowercase()}|${system ?: "all"}|${sources.map { "${it.id}@${it.base}" }.sorted().joinToString(",").ifEmpty { "all" }}|$sort|$pageNo|${settings.value.coverStyle}",
         )
         readJson(cacheFile("search", cacheKey), CachedSearch.serializer())?.let { cached ->
             if (System.currentTimeMillis() - cached.at < ttlMs) {
@@ -322,6 +327,8 @@ class StoreService(
                     } catch (e: Throwable) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
                         onError?.invoke("search ${source.id}", e)
+                        // "Load more" past a site's last page answers 404/500: no more results, not a failing source.
+                        if (pageNo > 1) return@async emptyList<RomEntry>()
                         val message = e.message ?: e.javaClass.simpleName
                         roundErrors[source.id] = message
                         errors[source.id] = message
@@ -345,6 +352,12 @@ class StoreService(
 
         dropPlaceholderCovers(entries)
         nameByTitleId(entries)
+        cleanTitles(entries)
+        // Sites that search whole pages or match loosely: only what the title is about.
+        if (query.isNotEmpty()) {
+            val relevant = entries.filter { Relevance.matches(query, it.title) }
+            if (relevant.isNotEmpty()) entries = relevant
+        }
         val t0 = System.nanoTime()
         runCatching { artwork.applyBoxart(entries) }
         val t1 = System.nanoTime()
@@ -364,7 +377,8 @@ class StoreService(
             hasMore = pageNo < lastPageCount, errors = roundErrors.toMap(),
             systems = entries.map { it.system }.distinct().sorted(),
         )
-        if (merged.isNotEmpty() || roundErrors.isEmpty()) {
+        // Only a complete answer is kept: one missing a failed source would hide it for days.
+        if (roundErrors.isEmpty()) {
             writeJson(cacheFile("search", cacheKey), CachedSearch.serializer(), CachedSearch(System.currentTimeMillis(), payload))
             cachePrune("search")
         }
@@ -373,7 +387,8 @@ class StoreService(
 
     /** A console's catalogue, merged (the console pages). */
     suspend fun browse(system: String, limit: Int = 200): SearchResult = withContext(Dispatchers.IO) {
-        val cached = browseCache[system]
+        val tBrowse = System.nanoTime()
+        val cached = browseCache["$system|${settings.value.coverStyle}"]
         val roundErrors = HashMap<String, String>()
         val entries: List<RomEntry> = if (cached != null && System.currentTimeMillis() - cached.first < ttlMs) {
             cached.second.also {
@@ -382,7 +397,12 @@ class StoreService(
             }
         } else {
             val found = coroutineScope {
-                buildSources().filter { it.supportsBrowse && restingUntil(it.id) == null && system in it.browseSystems() }.map { source ->
+                val able = buildSources().filter { it.supportsBrowse && system in it.browseSystems() }
+                // A source resting after failures is said so, not silently left out (an empty console page).
+                for (source in able.filter { restingUntil(it.id) != null }) {
+                    roundErrors[source.id] = "paused after ${health[source.id]?.failures ?: 3} failed tries (${health[source.id]?.error ?: "error"}); tried again in a few minutes"
+                }
+                able.filter { restingUntil(it.id) == null }.map { source ->
                     async {
                         try {
                             source.browse(system, limit).also { record(source.id, null) }
@@ -399,11 +419,18 @@ class StoreService(
                 }.awaitAll().flatten()
             }
             writeHealth()
+            val tSources = System.nanoTime()
             dropPlaceholderCovers(found)
+            nameByTitleId(found)
+            cleanTitles(found)
             runCatching { artwork.applyBoxart(found) }
+            val t1 = System.nanoTime()
             runCatching { artwork.switchCovers(found) }
+            val t2 = System.nanoTime()
             runCatching { artwork.fillMissing(found) }
-            if (found.isNotEmpty()) browseCache[system] = System.currentTimeMillis() to found
+            val t3 = System.nanoTime()
+            onTiming?.invoke("browse $system: sources ${(tSources - tBrowse) / 1_000_000} ms, boxart ${(t1 - tSources) / 1_000_000} ms, switch ${(t2 - t1) / 1_000_000} ms, fill ${(t3 - t2) / 1_000_000} ms")
+            if (found.isNotEmpty()) browseCache["$system|${settings.value.coverStyle}"] = System.currentTimeMillis() to found
             found
         }
         val merged = Dedupe.merge(entries, settings.value.sourcePriority).take(limit)
@@ -416,8 +443,8 @@ class StoreService(
     private suspend fun catalogueMatches(system: String, query: String, known: Set<String>): List<RomEntry> {
         val words = normalizeTitle(query).split(" ").filter { it.isNotEmpty() }
         if (words.isEmpty()) return emptyList()
-        if (browseCache[system] == null) withTimeoutOrNull(12_000) { runCatching { browse(system) } }
-        val cached = browseCache[system] ?: return emptyList()
+        if (browseCache["$system|${settings.value.coverStyle}"] == null) withTimeoutOrNull(12_000) { runCatching { browse(system) } }
+        val cached = browseCache["$system|${settings.value.coverStyle}"] ?: return emptyList()
         fun matches(title: String): Boolean {
             val titleWords = normalizeTitle(title).split(" ")
             return words.all { word -> titleWords.any { it.startsWith(word) } }
@@ -434,6 +461,40 @@ class StoreService(
     }
 
     private fun nameByTitleId(entries: List<RomEntry>) = nameByTitleId(entries) { artwork.titleName(it) }
+
+    /** Game names without tags, serials and site names (the site's own stays in `extra.rawTitle`). */
+    private fun cleanTitles(entries: List<RomEntry>) {
+        for (e in entries) {
+            if (e.extra.str("rawTitle") != null) continue
+            val raw = e.title
+            e.extra.putStr("rawTitle", raw)
+            if (e.region == null) e.region = extractRegion(raw)
+            e.title = TitleClean.display(raw)
+        }
+    }
+
+    /**
+     * Covers that arrived after a page was shown (SteamGridDB and IGDB keep
+     * looking in the background): the same rules again, from what is cached
+     * now. True when a cover changed.
+     */
+    suspend fun refreshCovers(roms: List<MergedRom>): Boolean = withContext(Dispatchers.IO) {
+        val entries = roms.flatMap { it.entries }
+        val before = entries.map { it.cover }
+        runCatching { artwork.applyBoxart(entries) }
+        runCatching { artwork.switchCovers(entries) }
+        runCatching { artwork.fillMissing(entries) }
+        entries.map { it.cover } != before
+    }
+
+    /** Clear a source's failures so it is asked again now (Settings, "Try again"). */
+    fun wakeSource(id: String) {
+        health[id]?.let { health[id] = it.copy(failures = 0) }
+        unreachable.remove(id)
+        writeHealth()
+    }
+
+    fun wakeAll() = health.keys.toList().forEach(::wakeSource)
 
     // ---------------------------------------------------------------- details
 
@@ -639,14 +700,17 @@ class StoreService(
                 }
             }
         }
-        val filename = file.filename.ifEmpty { Html.filenameFromUrl(url).ifEmpty { "${entry.title}.zip" } }
+        val original = file.filename.ifEmpty { Html.filenameFromUrl(url).ifEmpty { "${entry.title}.zip" } }
+        // Saved under the game's clean name, not "Mario_Kart_8_Deluxe_[…]_[taodung.com].rar".
+        val cleanBase = if (settings.value.cleanFileNames) FileNames.base(rom.title.ifEmpty { entry.title }, content, file.region ?: entry.region) else null
+        val filename = cleanBase?.let { FileNames.rename(original, it, target) } ?: original
         // The page to open in the browser if the link turns out to need one: the
         // site's download page when the source resolved one, else the game's page.
         val page = file.url.takeIf { it != url && it.startsWith("http") } ?: file.sourceUrl ?: entry.url
         return@withContext enqueueInto(
             folder, consoleFolder, target, entry.title, entry.source, filename, url, emptyMap(),
             file.size ?: entry.size ?: 0L, rom.cover ?: entry.cover, page, (System.nanoTime() - preparing) / 1e9,
-            resolveLate = FileHosts.resolvesLate(url),
+            resolveLate = FileHosts.resolvesLate(url), cleanBase = cleanBase,
         )
     }
 
@@ -670,7 +734,7 @@ class StoreService(
     private fun enqueueInto(
         folder: FolderNode, consoleFolder: FolderNode, target: String, title: String, sourceId: String,
         filename: String, url: String, headers: Map<String, String>, size: Long, cover: String?, page: String?, prepare: Double,
-        resolveLate: Boolean = false,
+        resolveLate: Boolean = false, cleanBase: String? = null,
     ): StartResult {
         val s = settings.value
         val needed = s.autoUnpackDiscs && Unpack.needsUnpack(target, filename)
@@ -688,7 +752,7 @@ class StoreService(
             destination = folder.id, headers = headers, extract = extract, keepArchive = keep,
             prepareSeconds = prepare, cover = cover,
             folderLabel = Systems.label(target) + if (folder !== consoleFolder) " · ${folder.name}" else "",
-            pageUrl = page, resolveLate = resolveLate,
+            pageUrl = page, resolveLate = resolveLate, cleanBase = cleanBase,
         )
         return StartResult.Started(job)
     }
