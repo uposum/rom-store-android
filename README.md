@@ -30,6 +30,7 @@
 - **Downloads that survive.** Run in the background with a notification, continue where they stopped after a restart, and are never saved when a link turns out to be a web page.
 - **Unpacking where it is needed.** Disc games for emulators that cannot read a `.zip` or `.7z` (PlayStation, GameCube, Wii, PS2, Switch, …) are unpacked after the download. ZIP, 7z and RAR.
 - **Updates and DLC.** For Switch and other consoles with add-ons, the game page lists the updates and DLC the sources publish, with *Download all*. They go into the console's `updates` and `dlc` folders, and the library shows them under their game.
+- **File hosts.** Sources that link to file hosts are read too: each post's game, update and DLC on every host it lists. Hosts with a countdown are waited out in the app (their guest limits are shown, not worked around); hosts that only serve a browser open in yours.
 - **Sites that need a browser.** When a link asks for a browser check or a download page, *Open site* shows the site's page in the app, and *Open in browser* hands it to your browser.
 - **Library.** Everything in your console folders with covers and real names: open a game in your emulator, unpack it, look it up in the store, or delete it.
 - **Shelves.** Recently viewed, favourites and your library on the home screen, then every console your sources can browse.

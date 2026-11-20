@@ -66,6 +66,10 @@ data class DownloadJob(
     val folderLabel: String? = null,
     /** The site's page for this file: where the in-app browser opens when the link needs a browser. */
     val pageUrl: String? = null,
+    /** The url is a file host's page: the file's own link is fetched each time the download starts. */
+    val resolveLate: Boolean = false,
+    /** What the job is doing before bytes flow ("Waiting for 1fichier… 42 s"). */
+    val note: String? = null,
 ) {
     val active: Boolean get() = status == JobStatus.QUEUED || status == JobStatus.DOWNLOADING || status == JobStatus.EXTRACTING
     val partName: String get() = Html.safeFilename(filename.ifEmpty { "$title.zip" }) + ".part"
@@ -99,6 +103,9 @@ class DownloadManager(
 
     /** Picks the folder for each file unpacked from a job's archive (add-ons into their folders). */
     var router: ((DownloadJob, FolderNode, String) -> FolderNode)? = null
+
+    /** Fetches the link of a `resolveLate` job (a file host's one-time link); `note` reports progress. */
+    var resolver: (suspend (DownloadJob, (String) -> Unit) -> String)? = null
 
     /** Called with each job that finished. */
     var onDone: ((DownloadJob) -> Unit)? = null
@@ -173,13 +180,14 @@ class DownloadManager(
         title: String, system: String, source: String, filename: String, url: String,
         destination: String, headers: Map<String, String> = emptyMap(), extract: Boolean = false,
         keepArchive: Boolean = true, prepareSeconds: Double = 0.0, cover: String? = null, folderLabel: String? = null,
-        pageUrl: String? = null,
+        pageUrl: String? = null, resolveLate: Boolean = false,
     ): DownloadJob {
         val id = "dl-${System.currentTimeMillis() / 1000}-${counter.incrementAndGet()}"
         val job = DownloadJob(
             id = id, title = title, system = system, source = source, filename = filename, url = url,
             destination = destination, headers = headers, extract = extract, keepArchive = keepArchive,
             prepareSeconds = prepareSeconds, cover = cover, folderLabel = folderLabel, pageUrl = pageUrl,
+            resolveLate = resolveLate,
         )
         jobs[id] = job
         cancels[id] = AtomicBoolean(false)
@@ -269,6 +277,12 @@ class DownloadManager(
                 val folder = withContext(Dispatchers.IO) { folderOf(job) }
                     ?: throw HttpError("The download folder is not available. Check the ROM folder in Settings.")
                 update(id, true) { it.copy(status = JobStatus.DOWNLOADING, error = null) }
+                var url = job.url
+                val resolve = resolver
+                if (job.resolveLate && resolve != null) {
+                    url = resolve(job) { text -> update(id) { it.copy(note = text) } }
+                    update(id, true) { it.copy(note = null) }
+                }
                 val sink = NodeSink(folder, job.partName)
                 val resumedFrom = if (resume) sink.existingSize() else 0L
                 update(id) { it.copy(resumedFrom = resumedFrom) }
@@ -279,7 +293,7 @@ class DownloadManager(
                 var lastError: String? = null
                 for (attempt in 0 until 3) {
                     try {
-                        http.download(job.url, sink, job.headers, resume = resume || attempt > 0, cancel = cancel) { received, total ->
+                        http.download(url, sink, job.headers, resume = resume || attempt > 0, cancel = cancel) { received, total ->
                             val now = System.nanoTime()
                             val elapsed = (now - last) / 1e9
                             val speed = if (elapsed >= 0.5) (received - lastBytes) / elapsed else null
@@ -364,7 +378,7 @@ class DownloadManager(
             }
             if (jobs[id]?.status == JobStatus.CANCELLED) return
             val message = if (e is HttpError) e.message else "${e.javaClass.simpleName}: ${e.message}"
-            update(id, true) { it.copy(status = JobStatus.ERROR, error = message, finished = System.currentTimeMillis(), speed = 0.0) }
+            update(id, true) { it.copy(status = JobStatus.ERROR, error = message, finished = System.currentTimeMillis(), speed = 0.0, note = null) }
             // The partial file stays so "Try again" can continue it.
         }
     }

@@ -298,7 +298,7 @@ open class HttpClient(
             try {
                 downloadClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) {
-                        throw HttpError(blocked(resp.code, resp.headers, host) ?: "HTTP ${resp.code} from $host", resp.code, url)
+                        throw HttpError(blocked(resp.code, resp.headers, host) ?: LinkCheck.statusMessage(resp.code, host), resp.code, url)
                     }
                     val stream = resp.body.byteStream()
                     val first = ByteArray(65536)
@@ -362,7 +362,7 @@ open class HttpClient(
                 return@withContext existing
             }
             if (!resp.isSuccessful) {
-                throw HttpError(blocked(resp.code, resp.headers, host) ?: "HTTP ${resp.code} while downloading $url", resp.code, url)
+                throw HttpError(blocked(resp.code, resp.headers, host) ?: LinkCheck.statusMessage(resp.code, host), resp.code, url)
             }
             val partial = existing > 0 && resp.code == 206
             if (!partial) existing = 0

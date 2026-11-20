@@ -175,7 +175,7 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
                     job?.takeIf { it.status == JobStatus.ERROR }?.let { failed ->
                         Spacer(Modifier.height(10.dp))
                         Text(failed.error ?: "The download failed", style = T.body2, color = C.bad)
-                        if (failed.pageUrl != null || failed.error?.contains("browser check") == true) {
+                        if (!linkIsDead(failed.error) && (failed.pageUrl != null || failed.error?.contains("browser check") == true)) {
                             Spacer(Modifier.height(8.dp))
                             Btn("Get it through the site's page", { vm.openBrowser(failed) }, kind = ButtonKind.Secondary, icon = Icons.Rounded.Download)
                         }
@@ -270,6 +270,13 @@ fun GamePageView(vm: AppViewModel, page: GamePage, gamepad: Boolean) {
 
 private fun optionFacts(option: DownloadOption): String = listOfNotNull(
     option.sourceLabel,
+    // Which file host serves it, for sites that link to hosts; and whether only a browser gets it.
+    io.github.uposum.romstore.core.net.FileHosts.let { h ->
+        val host = h.host(option.file.url)
+        val site = runCatching { java.net.URI(option.entry.url).host?.removePrefix("www.") }.getOrNull()
+        if (host.isEmpty() || site == null || host == site || host.endsWith(".$site")) null
+        else h.label(option.file.url) + if (h.needsBrowser(option.file.url)) " (opens in browser)" else ""
+    },
     formatBytes(option.file.size ?: option.entry.size).ifEmpty { null },
     option.file.region ?: option.entry.region,
     formatEta(option.eta).ifEmpty { null }?.let { "about $it" },

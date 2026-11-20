@@ -3,6 +3,7 @@ package io.github.uposum.romstore.core.store
 import io.github.uposum.romstore.core.model.Dedupe
 import io.github.uposum.romstore.core.model.ContentKind
 import io.github.uposum.romstore.core.model.Content
+import io.github.uposum.romstore.core.model.flag
 import io.github.uposum.romstore.core.model.GameMedia
 import io.github.uposum.romstore.core.model.LibraryGame
 import io.github.uposum.romstore.core.model.MergedRom
@@ -13,6 +14,8 @@ import io.github.uposum.romstore.core.model.normalizeTitle
 import io.github.uposum.romstore.core.model.putStr
 import io.github.uposum.romstore.core.net.HttpClient
 import io.github.uposum.romstore.core.net.HttpError
+import io.github.uposum.romstore.core.net.FileHosts
+import io.github.uposum.romstore.core.net.LinkCheck
 import io.github.uposum.romstore.core.net.Html
 import io.github.uposum.romstore.core.sources.Source
 import io.github.uposum.romstore.core.sources.SourceDefs
@@ -91,7 +94,7 @@ data class DownloadOption(
     val eta: Double?,
     val sourceLabel: String,
     /** Base game, update, DLC or a bundle of them. */
-    val content: io.github.uposum.romstore.core.model.ContentInfo = io.github.uposum.romstore.core.model.Content.classify(file.filename, entry.title),
+    val content: io.github.uposum.romstore.core.model.ContentInfo = io.github.uposum.romstore.core.model.Content.classifyFile(file.filename, file.label, entry.title),
     /** Set when the file's Switch title ID belongs to another game: that game's name. */
     val otherGame: String? = null,
 )
@@ -132,6 +135,8 @@ class StoreService(
         manager.onMeasure = { job, size, seconds -> speeds.record(job.source, size, seconds, job.prepareSeconds) }
         // Files unpacked from a bundle: updates and DLC into their folders.
         manager.router = { job, folder, name -> addonFolderFor(job.system, folder, Content.classify(name).kind) ?: folder }
+        // File hosts whose link works once (1fichier): fetched as the download starts.
+        manager.resolver = { job, note -> FileHosts.resolve(http, job.url, note) }
     }
 
     /** updates/ or dlc/ inside a console folder for an add-on (when that setting is on), else null. */
@@ -159,7 +164,7 @@ class StoreService(
         const val REST_MS = 15 * 60 * 1000L
         const val SPEED_TEST_EVERY = 7 * 24 * 3600 * 1000L
         /** Bumped when cached results would show outdated covers. */
-        const val CACHE_REVISION = 2
+        const val CACHE_REVISION = 3
 
         private fun sha1(text: String): String =
             MessageDigest.getInstance("SHA-1").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
@@ -339,6 +344,7 @@ class StoreService(
         }
 
         dropPlaceholderCovers(entries)
+        nameByTitleId(entries)
         val t0 = System.nanoTime()
         runCatching { artwork.applyBoxart(entries) }
         val t1 = System.nanoTime()
@@ -427,6 +433,8 @@ class StoreService(
         return keys.sortedWith(compareBy({ rank[it] ?: rank.size }, { Systems.name(it).lowercase() }))
     }
 
+    private fun nameByTitleId(entries: List<RomEntry>) = nameByTitleId(entries) { artwork.titleName(it) }
+
     // ---------------------------------------------------------------- details
 
     /** Resolve a game's download links and gallery; cached for the TTL. */
@@ -434,7 +442,9 @@ class StoreService(
         val key = sha1("${rom.title.trim().lowercase()}|${rom.system}")
         val cacheFile = cacheFile("details", key)
         readJson(cacheFile, CachedDetails.serializer())?.let { cached ->
-            if (System.currentTimeMillis() - cached.at < ttlMs && cached.entries.any { it.files.isNotEmpty() }) {
+            if (System.currentTimeMillis() - cached.at < ttlMs && cached.entries.any { it.files.isNotEmpty() } &&
+                cached.entries.none { e -> e.files.any { LinkCheck.expired(it.url) } }
+            ) {
                 val copy = rom.copy(entries = cached.entries, media = cached.media ?: rom.media)
                 markInstalled(listOf(copy))
                 return@withContext copy
@@ -461,6 +471,7 @@ class StoreService(
                         } catch (e: Exception) {
                             if (e is kotlinx.coroutines.CancellationException) throw e
                             lastError = e.message ?: e.javaClass.simpleName
+                            if (e is HttpError && !e.retry) break // a dead link stays dead
                         }
                         if (attempt < 2) delay(700L * (attempt + 1))
                     }
@@ -510,6 +521,8 @@ class StoreService(
             compareBy<Triple<DownloadOption, Int, Int>>(
                 // The game first; updates and DLC after it.
                 { if (it.first.content.isAddon) 1 else 0 },
+                // Files the app can fetch before those that need a browser.
+                { if (FileHosts.needsBrowser(it.first.file.url)) 1 else 0 },
                 { if (region.isNotEmpty()) (if (Regions.matches(it.first.file.region ?: it.first.entry.region ?: it.first.entry.title, region)) 0 else 1) else 0 },
                 { if (it.first.entry.source in testFailed) 1 else 0 },
                 { it.first.eta ?: Double.MAX_VALUE },
@@ -591,11 +604,25 @@ class StoreService(
         val target = system ?: entry.system
         val consoleFolder = runCatching { lib.consoleFolder(target, create = true) }.getOrNull()
             ?: return@withContext StartResult.Failed("Cannot open the ${Systems.label(target)} folder. Check the ROM folder in Settings.")
-        val content = Content.classify(file.filename, entry.title)
+        val content = Content.classifyFile(file.filename, file.label, entry.title)
+        // A file host that only hands files to a browser: the site's page is the way.
+        if (FileHosts.needsBrowser(file.url)) {
+            return@withContext StartResult.Failed(FileHosts.browserMessage(file.url) + ".", file.url)
+        }
         // Updates and DLC go into updates/ and dlc/, so frontends do not list them as games.
         val folder = addonFolderFor(target, consoleFolder, content.kind) ?: consoleFolder
         val source = buildSources().firstOrNull { it.id == entry.source }
         val preparing = System.nanoTime()
+        var file = file
+        if (LinkCheck.expired(file.url)) {
+            // A link from an earlier look at the game: ask the site for the current one.
+            val fresh = source?.let { runCatching { it.resolve(entry) }.getOrNull() }
+                ?.let { files -> files.firstOrNull { it.id == file.id } ?: files.firstOrNull { it.filename == file.filename } }
+            if (fresh == null || LinkCheck.expired(fresh.url)) {
+                return@withContext StartResult.Failed(LinkCheck.expiredMessage(file.url) + ".")
+            }
+            file = fresh
+        }
         var url = file.url
         if (source != null) {
             for (attempt in 0 until 3) {
@@ -619,6 +646,7 @@ class StoreService(
         return@withContext enqueueInto(
             folder, consoleFolder, target, entry.title, entry.source, filename, url, emptyMap(),
             file.size ?: entry.size ?: 0L, rom.cover ?: entry.cover, page, (System.nanoTime() - preparing) / 1e9,
+            resolveLate = FileHosts.resolvesLate(url),
         )
     }
 
@@ -642,6 +670,7 @@ class StoreService(
     private fun enqueueInto(
         folder: FolderNode, consoleFolder: FolderNode, target: String, title: String, sourceId: String,
         filename: String, url: String, headers: Map<String, String>, size: Long, cover: String?, page: String?, prepare: Double,
+        resolveLate: Boolean = false,
     ): StartResult {
         val s = settings.value
         val needed = s.autoUnpackDiscs && Unpack.needsUnpack(target, filename)
@@ -659,7 +688,7 @@ class StoreService(
             destination = folder.id, headers = headers, extract = extract, keepArchive = keep,
             prepareSeconds = prepare, cover = cover,
             folderLabel = Systems.label(target) + if (folder !== consoleFolder) " · ${folder.name}" else "",
-            pageUrl = page,
+            pageUrl = page, resolveLate = resolveLate,
         )
         return StartResult.Started(job)
     }
@@ -762,6 +791,30 @@ private val PLACEHOLDER_COVER = Regex("""(image|cover)[-_]?(un)?available|no[-_]
 
 /** Some sites hand out a "cover unavailable" picture as the cover: that is no
  * cover, so the other art sources (and the title tile) get their turn. */
+/**
+ * Switch uploads named by noise ("Mario. Kart. 8. Deluxe. DLC. …", "Name V 3.0.4[0100…][UPD]",
+ * "0100152000022800.nsp") get the official name of their title ID, with "Update"/"DLC",
+ * so they group with their game. The ID comes from the title, or from the file for
+ * sources whose entry is the file itself (`extra.fileNamed`); a site's post keeps its
+ * own name (its file can belong to another game, see `otherGame`).
+ */
+internal fun nameByTitleId(entries: List<RomEntry>, titleName: (String) -> String?) {
+    for (e in entries) {
+        if (e.system != "switch") continue
+        val tid = Content.titleId(e.title)
+            ?: (if (e.extra.flag("fileNamed")) e.files.firstNotNullOfOrNull { Content.titleId(it.filename) } else null)
+            ?: continue
+        val base = Content.baseTitleId(tid) ?: continue
+        val name = runCatching { titleName(base) }.getOrNull()?.takeIf { it.isNotBlank() } ?: continue
+        val info = Content.classifyFile(e.files.firstOrNull()?.filename ?: e.title, e.title)
+        e.title = when (info.kind) {
+            ContentKind.UPDATE -> "$name Update" + (info.version?.takeIf { !it.startsWith("#") }?.let { " $it" } ?: "")
+            ContentKind.DLC -> "$name DLC"
+            else -> name
+        }
+    }
+}
+
 fun dropPlaceholderCovers(entries: List<RomEntry>) {
     for (entry in entries) {
         if (entry.cover?.let { PLACEHOLDER_COVER.containsMatchIn(it) } == true) entry.cover = null

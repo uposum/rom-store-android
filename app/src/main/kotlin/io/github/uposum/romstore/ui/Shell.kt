@@ -101,6 +101,13 @@ fun Shell(vm: AppViewModel) {
     val scope = rememberCoroutineScope()
     var settingsSection by remember { mutableStateOf(SettingsSection.Library) }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(Unit) {
+        vm.external.collect { url ->
+            runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+                .onFailure { vm.messages.tryEmit("No browser to open $url") }
+        }
+    }
     LaunchedEffect(Unit) {
         vm.messages.collect { message ->
             snackbar.currentSnackbarData?.dismiss()

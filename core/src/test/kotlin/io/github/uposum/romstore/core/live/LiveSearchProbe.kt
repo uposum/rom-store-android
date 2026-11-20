@@ -80,7 +80,7 @@ class LiveSearchProbe {
         val entries = source.search(System.getProperty("q") ?: "update", 40)
         entries.forEach { println("   ${it.system} | ${it.title} | ${it.url}") }
         if (System.getProperty("resolve") == "1") entries.take(4).forEach { e ->
-            runCatching { source.resolve(e) }.getOrDefault(emptyList()).forEach { println("      ${e.title}: ${it.filename} | ${it.label}") }
+            runCatching { source.resolve(e) }.onFailure { x -> println("      ${e.title}: FAILED ${x.message}") }.getOrDefault(emptyList()).forEach { println("      ${e.title}: ${it.filename} | ${it.label} | ${it.url}") }
         }
     }
 
@@ -162,5 +162,26 @@ class LiveSearchProbe {
         igdb.lookupMany(entries.map { it.title }.take(14), 14)
         System.gc(); println("igdb: ${used()} MB")
         entries.forEach { println("${it.system} ${it.title} -> ${it.cover}") }
+    }
+
+    @Test
+    fun fileHostSources(): Unit = runBlocking {
+        Assume.assumeTrue(System.getProperty("live") == "1")
+        val http = HttpClient()
+        val q = System.getProperty("q")?.ifEmpty { null } ?: "mario kart 8 deluxe"
+        val archive = SourceDefs.build("archiveorg", http, "https://archive.org")!!
+        val found = archive.search(q, 40)
+        found.forEach { e -> println("   archive | ${e.system} | ${e.title} | ${e.files.joinToString { "${it.filename} (${it.size})" }.take(140)}") }
+        found.flatMap { it.files }.firstOrNull { (it.size ?: 0) > 50_000_000 }?.let { f ->
+            val s = http.sample(f.url, maxBytes = 30L * 1024 * 1024, maxSeconds = 8.0)
+            println("   archive speed: ${s.bytes / s.seconds / 1e6} MB/s over ${s.bytes} bytes")
+        }
+        val nsw = SourceDefs.build("nswgame", http, "https://nswgf.com")!!
+        val entry = nsw.search(q, 20).firstOrNull { it.system == "switch" } ?: return@runBlocking
+        val files = nsw.resolve(entry)
+        files.forEach { println("   nswgame | ${it.label} | ${it.filename}") }
+        val late = files.firstOrNull { io.github.uposum.romstore.core.net.FileHosts.resolvesLate(it.url) } ?: return@runBlocking
+        val link = runCatching { io.github.uposum.romstore.core.net.FileHosts.resolve(http, late.url) { println("     note: $it") } }
+        println("   1fichier: " + (link.getOrNull() ?: link.exceptionOrNull()?.message))
     }
 }

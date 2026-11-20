@@ -10,6 +10,8 @@ import io.github.uposum.romstore.core.model.Screenshot
 import io.github.uposum.romstore.core.model.extractRegion
 import io.github.uposum.romstore.core.net.Html
 import io.github.uposum.romstore.core.net.HttpClient
+import io.github.uposum.romstore.core.net.HttpError
+import io.github.uposum.romstore.core.net.LinkCheck
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -174,6 +176,8 @@ class SwitchRomsSource(http: HttpClient, options: SourceOptions) : Source(http, 
         // Some pages only expose the link through the download button.
         val match = FILE_RE.find(html) ?: BUTTON_RE.find(html) ?: return emptyList()
         val url = match.groupValues[1].replace("&amp;", "&")
+        // Some posts carry a signed link that has long expired; the site never renews it.
+        if (LinkCheck.expired(url)) throw HttpError(LinkCheck.expiredMessage(url), 410, url, retry = false)
         val filename = filenameFrom(url)
         val size = remoteSize(url, entry.url)
         return listOf(
@@ -196,6 +200,10 @@ class SwitchRomsSource(http: HttpClient, options: SourceOptions) : Source(http, 
         if (length.isNotEmpty() && length.all { it in '0'..'9' }) length.toLongOrNull() else null
     } catch (e: CancellationException) {
         throw e
+    } catch (e: HttpError) {
+        // A file that is gone (vikingfile and co. answer 404, signed links 410) is not offered.
+        if (e.status == 404 || e.status == 410) throw HttpError(LinkCheck.statusMessage(e.status, runCatching { java.net.URI(url.replace(" ", "%20")).host }.getOrNull() ?: "the file host"), e.status, url, retry = false)
+        null
     } catch (_: Exception) {
         null
     }

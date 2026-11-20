@@ -59,7 +59,9 @@ object Content {
     private val SWITCH_VERSION = Regex("""\[v(\d{1,10})]""", RegexOption.IGNORE_CASE)
     private val DOTTED_VERSION = Regex("""(?<![\w.])v?(\d{1,2}\.\d{1,2}(?:\.\d{1,3})?[a-z]?)(?![\w.])""", RegexOption.IGNORE_CASE)
     private val DLC_WORDS = Regex("""\b(dlcs?|add[- ]?ons?|season[ _-]?pass|expansion[ _-]?pass|downloadable[ _-]?content)\b""", RegexOption.IGNORE_CASE)
-    private val UPDATE_WORDS = Regex("""\b(updates?|updated|upd|patch(?:ed)?)\b""", RegexOption.IGNORE_CASE)
+    // "Update400" (a site's "Update 4.0.0" without dots) counts too.
+    private val UPDATE_WORDS = Regex("""\b(updates?|updated|upd|patch(?:ed)?)\d*\b""", RegexOption.IGNORE_CASE)
+    private val FIRMWARE_NOTE = Regex("""\([^)]*firmware[^)]*\)""", RegexOption.IGNORE_CASE)
     private val BASE_WORDS = Regex("""\b(base[ _-]?game|base|full[ _-]?game)\b""", RegexOption.IGNORE_CASE)
     private val JOIN_WORDS = Regex("""(\+|&|\bplus\b|\bwith\b|\bincl(?:udes?|uding)?\b|\band\b)""", RegexOption.IGNORE_CASE)
 
@@ -97,6 +99,24 @@ object Content {
      * The file name wins where both say something; titles of game pages often
      * mention updates the file does not contain.
      */
+    /**
+     * A file as a site lists it: its name says what it is, else the label the
+     * site gives it ("Update 4.0.1 (v1507328)", "Booster Course DLC"), for
+     * hosts whose file names say nothing.
+     */
+    fun classifyFile(filename: String?, label: String?, title: String? = null): ContentInfo {
+        val byName = classify(filename, title)
+        if (label.isNullOrBlank()) return byName
+        // "(Required Firmware – v22.5.0)" is not the update's version.
+        val byLabel = classify(FIRMWARE_NOTE.replace(label, ""), null)
+        if (byName.isAddon || byName.kind == ContentKind.BUNDLE) {
+            // The label's "4.0.1" reads better than the system's "#23".
+            val better = byLabel.version?.takeIf { byLabel.kind == byName.kind && !it.startsWith("#") && (byName.version == null || byName.version.startsWith("#")) }
+            return if (better != null) byName.copy(version = better) else byName
+        }
+        return if (byLabel.isAddon) byLabel.copy(titleId = byLabel.titleId ?: byName.titleId) else byName
+    }
+
     fun classify(filename: String?, title: String? = null): ContentInfo {
         val name = (filename ?: "").replace('_', ' ').replace('+', ' ')
         val text = name + " " + (title ?: "")

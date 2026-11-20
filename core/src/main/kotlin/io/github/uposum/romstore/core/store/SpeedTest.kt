@@ -52,7 +52,10 @@ class SpeedTest(private val scope: CoroutineScope) {
             val entries = try { source.search(term, limit = 12) } catch (e: Exception) { last = "search failed: ${e.message}"; continue }
             for (entry in SpeedTestRules.order(entries).take(3)) {
                 if (!seen.add(entry.key)) continue
-                val files = try { entry.files.ifEmpty { source.resolve(entry) } } catch (e: Exception) { last = "could not open a game page: ${e.message}"; continue }
+                val all = try { entry.files.ifEmpty { source.resolve(entry) } } catch (e: Exception) { last = "could not open a game page: ${e.message}"; continue }
+                // Never spend a host's guest download (1fichier) or open one that needs a browser.
+                val files = all.filter { !io.github.uposum.romstore.core.net.FileHosts.needsBrowser(it.url) && !io.github.uposum.romstore.core.net.FileHosts.resolvesLate(it.url) }
+                if (files.isEmpty() && all.isNotEmpty()) { last = "its files are on hosts with a wait or a browser check"; continue }
                 if (files.isNotEmpty()) {
                     found += entry to files.maxBy { it.size ?: entry.size ?: 0L }
                     if (found.size >= count) return found

@@ -25,6 +25,8 @@ object SourceDefs {
         Def("romsfun", "RomsFun", "https://romsfun.com", true) { h, o -> RomsFunSource(h, o) },
         Def("myabandonware", "My Abandonware", "https://www.myabandonware.com", false) { h, o -> MyAbandonwareSource(h, o) },
         Def("homebrewhub", "Homebrew Hub", "https://hh3.gbdev.io", true) { h, o -> HomebrewHubSource(h, o) },
+        Def("nswgame", "NSWGame", "https://nswgf.com", true) { h, o -> NswGameSource(h, o) },
+        Def("archiveorg", "Internet Archive", "https://archive.org", false) { h, o -> ArchiveOrgSource(h, o) },
     )
 
     val IDS: List<String> = ALL.map { it.id }

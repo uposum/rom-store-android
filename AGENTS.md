@@ -37,8 +37,11 @@ core/   Kotlin/JVM, unit-tested on the desktop JVM
             update / DLC / bundle from file and post names, Switch title IDs)
   net/      HttpClient (OkHttp: throttle, cookies, retries, download with
             resume, sample), Html (regex helpers ported from htmlutil.py),
-            RegexFlags (UNI, findAllFast/replaceFast — see §6)
-  sources/  one reader per site + SourceDefs (id, label, factory)
+            RegexFlags (UNI, findAllFast/replaceFast — see §6), FileHosts
+            (which hosts the app fetches, 1fichier's countdown), LinkCheck
+            (expiry inside signed links, readable HTTP errors)
+  sources/  one reader per site + SourceDefs (id, label, factory); ArchiveOrg
+            (search + metadata API), NswGame (posts linking to file hosts)
   art/      BoxArt (libretro-thumbnails), GameTdb, SteamGridCovers,
             IgdbCovers, YouTube, SwitchTitles, ImageUrls, ArtKeys
   store/    StoreService (search/browse/details/download/library), Downloads
@@ -124,3 +127,17 @@ the application id: installed copies could not update.
   their game by Switch title ID (base = ID & ~0x1FFF; update +0x800, DLC
   +0x1000+n) or name. A file whose title ID names another game is flagged
   (`DownloadOption.otherGame`): sites mislabel posts.
+- **File hosts** (`FileHosts`): a host is fetched in the app only when its own
+  page flow works for any visitor without a check: 1fichier (countdown, then a
+  form; resolved when the job starts, `DownloadJob.resolveLate`, because the
+  link works once). Its guest limit ("wait N minutes") is reported, never
+  worked around, and the speed test never spends it. Hosts behind Cloudflare
+  or a captcha (megaup, buzzheavier, send.now, vikingfile, datanodes, …) are
+  `needsBrowser`: listed after the others and opened in the device browser.
+  Never imitate a browser to get past a check.
+- **Dead links are not offered**: an expiry inside the link (`LinkCheck`) or a
+  404/410 from the file host makes the entry say so instead.
+- **Switch uploads are named by title ID** (`nameByTitleId`) when the entry is
+  the file itself (`extra.fileNamed`, the Internet Archive) or the title holds
+  the ID, so "0100152000022800.nsp" groups as "<game> Update". A site's post
+  keeps its own name.

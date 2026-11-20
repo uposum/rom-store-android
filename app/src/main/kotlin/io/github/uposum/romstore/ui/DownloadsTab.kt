@@ -105,7 +105,7 @@ private fun JobRow(vm: AppViewModel, job: DownloadJob) {
         when {
             job.active -> IconBtn(Icons.Rounded.Close, "Cancel", { vm.cancelDownload(job.id) })
             job.status == JobStatus.ERROR || job.status == JobStatus.CANCELLED -> Row {
-                if (job.status == JobStatus.ERROR && (job.pageUrl != null || job.error?.contains("browser check") == true)) {
+                if (job.status == JobStatus.ERROR && !linkIsDead(job.error) && (job.pageUrl != null || job.error?.contains("browser check") == true)) {
                     // The link wanted a browser (a check, a file host's page): get it through the site's page.
                     Btn("Open site", { vm.openBrowser(job) }, kind = ButtonKind.Primary, icon = Icons.Rounded.Language)
                     Spacer(Modifier.width(8.dp))
@@ -119,7 +119,7 @@ private fun JobRow(vm: AppViewModel, job: DownloadJob) {
     }
 }
 
-private fun statusLine(job: DownloadJob): String = when (job.status) {
+private fun statusLine(job: DownloadJob): String = job.note ?: when (job.status) {
     JobStatus.QUEUED -> "Waiting…"
     JobStatus.EXTRACTING -> "Unpacking… ${formatBytes(job.received)}"
     else -> buildList {
@@ -128,3 +128,6 @@ private fun statusLine(job: DownloadJob): String = when (job.status) {
         if (job.speed > 0 && job.total > job.received) add("${formatEta((job.total - job.received) / job.speed)} left")
     }.joinToString("  ·  ")
 }
+
+/** The site's link is expired or the file gone: its page cannot help either. */
+fun linkIsDead(error: String?): Boolean = error != null && ("expired" in error || "is gone" in error)

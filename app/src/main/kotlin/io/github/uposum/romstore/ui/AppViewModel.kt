@@ -68,6 +68,14 @@ data class GamePage(
     /** Every update and DLC: the game's own add-on files and those found separately. */
     val allAddons: List<DownloadOption>
         get() = (options.filter { it.content.isAddon } + addons).distinctBy { it.entry.key + "|" + it.file.id }
+            // Updates first, newest on top; then DLC. Files the app can fetch before browser-only ones.
+            .sortedWith(
+                compareBy<DownloadOption> { it.content.kind.ordinal }
+                    .thenByDescending { versionSortKey(it.content.version) }
+                    .thenBy { if (io.github.uposum.romstore.core.net.FileHosts.needsBrowser(it.file.url)) 1 else 0 },
+            )
+            // One row per version and source: the same file on other hosts is the same thing.
+            .distinctBy { listOf(it.entry.key, it.content.kind, it.content.version ?: it.file.filename, it.file.region).joinToString("|") }
 }
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -116,6 +124,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The in-app browser, when a link needs one. */
     private val _browser = MutableStateFlow<BrowserRequest?>(null)
     val browser = _browser.asStateFlow()
+
+    /** Links to open in the device's browser (file hosts that only serve a real browser). */
+    val external = MutableSharedFlow<String>(extraBufferCapacity = 2)
 
     /** One-line messages for the snackbar. */
     val messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
@@ -289,8 +300,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         picks.forEach { download(it) }
     }
 
-    private fun versionKey(version: String?): String =
-        (version ?: "").removePrefix("#").split('.').joinToString(".") { part -> part.filter(Char::isDigit).padStart(5, '0') }
+    private fun versionKey(version: String?): String = versionSortKey(version)
 
     fun stepGame(delta: Int) {
         val page = _game.value ?: return
@@ -333,7 +343,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 is StartResult.Failed -> {
                     val pageUrl = r.pageUrl
-                    if (pageUrl != null) {
+                    if (pageUrl != null && io.github.uposum.romstore.core.net.FileHosts.needsBrowser(pageUrl)) {
+                        // A file host behind a check: the device's browser gets it (into Downloads).
+                        messages.tryEmit("${io.github.uposum.romstore.core.net.FileHosts.label(pageUrl)} only serves a browser: opening it there.")
+                        external.tryEmit(pageUrl)
+                    } else if (pageUrl != null) {
                         // The site wants a browser: open its page here, the download is taken over from it.
                         messages.tryEmit("${option.sourceLabel} needs its page opened: finish it there, the download starts here.")
                         _browser.value = BrowserRequest(option.entry.title, option.entry.system, option.entry.source, page.rom.cover ?: option.entry.cover, pageUrl)
@@ -356,6 +370,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Get one file through the site's page: its download page on the site, else the game's page. */
     fun openBrowser(option: DownloadOption) {
+        if (io.github.uposum.romstore.core.net.FileHosts.needsBrowser(option.file.url)) { external.tryEmit(option.file.url); return }
         val entryHost = runCatching { android.net.Uri.parse(option.entry.url).host }.getOrNull()
         val fileHost = runCatching { android.net.Uri.parse(option.file.url).host }.getOrNull()
         val page = if (fileHost != null && fileHost == entryHost) option.file.url else option.file.sourceUrl ?: option.entry.url
@@ -515,3 +530,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return "$root/$name"
     }
 }
+
+/** "4.0.1" → "00004.00001…" so versions sort as numbers; "#23" (the system's number) sorts after dotted ones of the same game. */
+internal fun versionSortKey(version: String?): String =
+    (if (version?.startsWith("#") == true || version == null) "0:" else "1:") +
+        (version ?: "").removePrefix("#").split('.').joinToString(".") { part -> part.filter(Char::isDigit).padStart(5, '0') }
